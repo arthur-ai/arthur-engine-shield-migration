@@ -4,9 +4,6 @@ Queries the Shield PostgreSQL database directly and prints a stats report on the
 number of tasks, rules, inferences, etc. that can be migrated to the Engine.
 No data is written.
 
-Reads over SQL rather than the Shield API so counts stay fast for customers with
-~1B inferences (the API's OFFSET pagination does not hold up at that scale).
-
 Shield DB connection:
     SHIELD_POSTGRES_USER
     SHIELD_POSTGRES_PASSWORD
@@ -118,9 +115,6 @@ def scope_report(engine: Engine, from_dt, to_dt):
             inf_params,
         ).scalar_one()
 
-        # Per-task counts in a single grouped query (NULL task_id => 'untasked').
-        # Qualify the window column as i.created_at: both inferences and tasks
-        # have a created_at, so a bare reference is ambiguous in this join.
         inf_join_where = inf_where.replace("created_at", "i.created_at")
         task_count_rows = conn.execute(
             text(f"""
@@ -136,8 +130,6 @@ def scope_report(engine: Engine, from_dt, to_dt):
         ).mappings()
         rows = list(task_count_rows)
         task_counts = {row["name"]: row["n"] for row in rows}
-        # Task-less inferences (NULL task_id, shown as '(no task)') are still
-        # migratable, but they are not a task — don't count them here.
         tasks_with_data = sum(1 for row in rows if row["task_id"] is not None)
 
         print("Inferences")
@@ -148,8 +140,6 @@ def scope_report(engine: Engine, from_dt, to_dt):
         print()
 
         # ── Validation results ──────────────────────────────────────────────
-        # One rule result per rule run against a prompt / response. These carry
-        # their own created_at, so the window filters them directly.
         prr_where, prr_params = window_clause(from_dt, to_dt)
         n_prompt_rr = conn.execute(
             text(f"SELECT COUNT(*) FROM prompt_rule_results {prr_where}"),
@@ -203,8 +193,8 @@ def main():
     )
     args = parser.parse_args()
 
-    # Require an explicit window: either --last-days, or both --from-date and
-    # --to-date. Scoping all of time is not allowed.
+    # Require an explicit window: 
+    # either --last-days, or both --from-date and --to-date.
     if args.last_days is None and not (args.from_date and args.to_date):
         parser.error(
             "specify a date window: either --last-days N, "
