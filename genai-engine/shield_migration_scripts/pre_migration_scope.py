@@ -14,11 +14,15 @@ Shield DB connection:
     SHIELD_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
 
 A date window is required: pass either --last-days, or both --from-date and
---to-date. Scoping all of time is not allowed.
+--to-date.
+
+You may optionally pass --output-dir/-o to also write the results to a file
+in that directory.
 
 Usage:
     python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
     python pre_migration_scope.py --last-days 180
+    python pre_migration_scope.py --last-days 180 --output-dir ./reports
 """
 
 import argparse
@@ -78,17 +82,19 @@ def window_clause(from_dt, to_dt, column="created_at"):
     return where, params
 
 
-def scope_report(engine: Engine, from_dt, to_dt):
+def scope_report(engine: Engine, from_dt, to_dt, output_dir=None):
+    lines = []
+
     window_label = "all time"
     if from_dt:
         window_label = f"from {from_dt.date()}"
     if to_dt:
         window_label += f" to {to_dt.date()}"
 
-    print(f"\n{'='*60}")
-    print(f"  Shield → Engine Migration Scope Report")
-    print(f"  Window: {window_label}")
-    print(f"{'='*60}\n")
+    lines.append(f"\n{'='*60}")
+    lines.append(f"  Shield → Engine Migration Scope Report")
+    lines.append(f"  Window: {window_label}")
+    lines.append(f"{'='*60}\n")
 
     with engine.connect() as conn:
         # ── Config ──────────────────────────────────────────────────────────
@@ -101,12 +107,12 @@ def scope_report(engine: Engine, from_dt, to_dt):
         ).scalar_one()
         n_links = conn.execute(text("SELECT COUNT(*) FROM tasks_to_rules")).scalar_one()
 
-        print("Config (always migrated in full, date window does not apply)")
-        print(f"  Tasks                          {fmt(task_count)}")
-        print(f"  Task-scoped rules              {fmt(rule_count)}")
-        print(f"  Default rules                  {fmt(n_default)}")
-        print(f"  Task–rule links                {fmt(n_links)}")
-        print()
+        lines.append("Config (always migrated in full, date window does not apply)")
+        lines.append(f"  Tasks                          {fmt(task_count)}")
+        lines.append(f"  Task-scoped rules              {fmt(rule_count)}")
+        lines.append(f"  Default rules                  {fmt(n_default)}")
+        lines.append(f"  Task–rule links                {fmt(n_links)}")
+        lines.append("")
 
         # ── Inferences ──────────────────────────────────────────────────────
         inf_where, inf_params = window_clause(from_dt, to_dt)
@@ -132,12 +138,12 @@ def scope_report(engine: Engine, from_dt, to_dt):
         task_counts = {row["name"]: row["n"] for row in rows}
         tasks_with_data = sum(1 for row in rows if row["task_id"] is not None)
 
-        print("Inferences")
-        print(f"  Total Inferences               {fmt(total_infs)}")
-        print(
+        lines.append("Inferences")
+        lines.append(f"  Total Inferences               {fmt(total_infs)}")
+        lines.append(
             f"  Tasks with data                {fmt(tasks_with_data)} / {fmt(task_count)}",
         )
-        print()
+        lines.append("")
 
         # ── Validation results ──────────────────────────────────────────────
         prr_where, prr_params = window_clause(from_dt, to_dt)
@@ -150,11 +156,13 @@ def scope_report(engine: Engine, from_dt, to_dt):
             prr_params,
         ).scalar_one()
 
-        print("Validation (rule) results")
-        print(f"  Validate Prompt Results        {fmt(n_prompt_rr)}")
-        print(f"  Validate Response Results      {fmt(n_response_rr)}")
-        print(f"  Total Validation Results       {fmt(n_prompt_rr + n_response_rr)}")
-        print()
+        lines.append("Validation (rule) results")
+        lines.append(f"  Validate Prompt Results        {fmt(n_prompt_rr)}")
+        lines.append(f"  Validate Response Results      {fmt(n_response_rr)}")
+        lines.append(
+            f"  Total Validation Results       {fmt(n_prompt_rr + n_response_rr)}",
+        )
+        lines.append("")
 
         # ── Feedback ────────────────────────────────────────────────────────
         fb_where, fb_params = window_clause(from_dt, to_dt)
@@ -162,15 +170,29 @@ def scope_report(engine: Engine, from_dt, to_dt):
             text(f"SELECT COUNT(*) FROM inference_feedback {fb_where}"),
             fb_params,
         ).scalar_one()
-        print(f"Feedback")
-        print(f"  Total Feedback                 {fmt(n_fb)}")
-        print()
+        lines.append("Feedback")
+        lines.append(f"  Total Feedback                 {fmt(n_fb)}")
+        lines.append("")
 
         # ── Per-task breakdown ──────────────────────────────────────────────
-        print("Per-task inference counts")
+        lines.append("Per-task inference counts")
         for name, count in sorted(task_counts.items(), key=lambda x: -x[1]):
-            print(f"  {name:<30} {fmt(count)}")
-        print()
+            lines.append(f"  {name:<30} {fmt(count)}")
+        lines.append("")
+
+    report = "\n".join(lines)
+    print(report)
+    if output_dir is not None:
+        from_label = from_dt.date().isoformat()
+        to_label = to_dt.date().isoformat()
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(
+            output_dir,
+            f"shield_migration_scope_{from_label}_to_{to_label}.txt",
+        )
+        with open(output_path, "w") as f:
+            f.write(report + "\n")
+        print(f"Report written to {output_path}")
 
 
 def main():
@@ -191,9 +213,15 @@ def main():
         default=None,
         help="Shorthand: scope the last N days",
     )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default=None,
+        help="Directory to write the report file to.",
+    )
     args = parser.parse_args()
 
-    # Require an explicit window: 
+    # Require an explicit window:
     # either --last-days, or both --from-date and --to-date.
     if args.last_days is None and not (args.from_date and args.to_date):
         parser.error(
@@ -203,7 +231,7 @@ def main():
 
     from_dt, to_dt = parse_window(args)
     engine = get_shield_engine()
-    scope_report(engine, from_dt, to_dt)
+    scope_report(engine, from_dt, to_dt, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

@@ -49,12 +49,16 @@ pip install sqlalchemy psycopg2-binary
 A date window is **required**: pass either `--last-days`, or **both**
 `--from-date` and `--to-date`. Scoping all of time is not allowed.
 
-```bash
-# Scope a fixed date window (from-date inclusive, to-date exclusive, format YYYY-MM-DD)
-python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
+The date window should match the data retention policy of the Engine, so that
+only inferences you intend to keep are migrated. For example, if the retention
+period of the Engine is 90 days, use `--last-days 90`.
 
+```bash
 # Scope only the last N days
 python pre_migration_scope.py --last-days 180
+
+# Scope a fixed date window (from-date inclusive, to-date exclusive, format YYYY-MM-DD)
+python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
 ```
 
 ### Options
@@ -64,6 +68,7 @@ python pre_migration_scope.py --last-days 180
 | `--from-date` | Start date (inclusive), ISO format e.g. `2020-01-01`. Applies to inferences, validation results, and feedback only. Must be paired with `--to-date`. |
 | `--to-date` | End date (exclusive), ISO format e.g. `2021-01-01`. Applies to inferences, validation results, and feedback only. Must be paired with `--from-date`. |
 | `--last-days` | Shorthand to scope the last N days. Takes precedence over `--from-date`/`--to-date`. |
+| `--output-dir` / `-o` | Directory to write the report file to. |
 
 > **Note:** Config objects (tasks, rules, default rules, and task–rule links) are
 > always reported in full — the date window does **not** apply to them. The window
@@ -71,7 +76,7 @@ python pre_migration_scope.py --last-days 180
 
 ### Output
 
-The report is printed to stdout in these sections:
+The report is printed to stdout and can also be written to a file when `--output-dir` is specified. These are the sections written:
 
 - **Config** — total tasks, task-scoped rules, default rules, and task–rule links.
 - **Inferences** — total inference count in the window, and how many tasks have data.
