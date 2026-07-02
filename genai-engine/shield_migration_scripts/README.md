@@ -59,6 +59,9 @@ python pre_migration_scope.py --last-days 180
 
 # Scope a fixed date window (from-date inclusive, to-date exclusive, format YYYY-MM-DD)
 python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
+
+# Use fast planner estimates instead of exact counts (for very large tables)
+python pre_migration_scope.py --last-days 180 --estimate
 ```
 
 ### Options
@@ -69,10 +72,15 @@ python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
 | `--to-date` | End date (exclusive), ISO format e.g. `2021-01-01`. Applies to inferences, validation results, and feedback only. Must be paired with `--from-date`. |
 | `--last-days` | Shorthand to scope the last N days. Takes precedence over `--from-date`/`--to-date`. |
 | `--output-dir` / `-o` | Directory to write the report file to. |
+| `--estimate` | Use planner row estimates instead of exact counts. Cheap on huge tables, but skips the per-task breakdown. |
 
 > **Note:** Config objects (tasks, rules, default rules, and task–rule links) are
 > always reported in full — the date window does **not** apply to them. The window
 > only filters inferences, validation results, and feedback.
+
+### Estimate mode (`--estimate`)
+
+Use this mode for large tables to get a rough estimate of th volume of resources to be migrated. Exact counts must visit every matching row. Estimate mode instead runs each count as `EXPLAIN (FORMAT JSON) SELECT ...` and reads the planner's `Plan Rows` estimate.
 
 ### Output
 
@@ -101,7 +109,7 @@ Config (always migrated in full, date window does not apply)
   Task–rule links                213
 
 Inferences
-  Total                          1,204,556
+  Total Inferences               1,204,556
   Tasks with data                38 / 42
 
 Validation (rule) results
@@ -115,4 +123,32 @@ Feedback
 Per-task inference counts
   fraud-detection                512,003
   support-summarizer             301,991
+```
+
+With `--estimate`, counts are approximate (`~`) and the per-task breakdown is
+omitted:
+
+```
+============================================================
+  Shield → Engine Migration Scope Report
+  Window: from 2020-01-01 to 2021-01-01
+  Mode:   estimate
+============================================================
+
+Config (always migrated in full, date window does not apply)
+  Tasks                          42
+  Task-scoped rules              118
+  Default rules                  6
+  Task–rule links                213
+
+Inferences
+  Total Inferences               ~1,198,400
+
+Validation (rule) results
+  Validate Prompt Results        ~1,198,400
+  Validate Response Results      ~1,142,900
+  Total Validation Results       ~2,341,300
+
+Feedback
+  Total Feedback                 ~9,750
 ```
