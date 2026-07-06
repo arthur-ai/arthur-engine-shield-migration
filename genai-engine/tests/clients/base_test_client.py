@@ -74,6 +74,13 @@ from schemas.enums import (
     RagProviderEnum,
 )
 from schemas.internal_schemas import AgenticAnnotation
+from schemas.migration_schemas import (
+    BulkMigrateFeedbackResponse,
+    BulkMigrateInferencesResponse,
+    BulkMigrateRulesResponse,
+    BulkMigrateTasksResponse,
+    BulkMigrateTaskToRuleLinksResponse,
+)
 from schemas.request_schemas import (
     AgenticAnnotationRequest,
     ApiKeyRagAuthenticationConfigRequest,
@@ -5060,6 +5067,104 @@ class GenaiEngineTestClientBase(httpx.Client):
         return (
             resp.status_code,
             resp.json(),
+        )
+
+    def bulk_migrate_tasks(
+        self,
+        tasks: list[dict],
+        org_id: str,
+    ) -> tuple[int, BulkMigrateTasksResponse | None]:
+        resp = self.base_client.post(
+            "/api/v1/migration/tasks/bulk",
+            json={"tasks": tasks, "org_id": org_id},
+            headers=self.authorized_org_admin_api_key_headers,
+        )
+        log_response(resp)
+        return (
+            resp.status_code,
+            (
+                BulkMigrateTasksResponse.model_validate(resp.json())
+                if resp.status_code == 200
+                else None
+            ),
+        )
+
+    def bulk_migrate_rules(
+        self,
+        rules: list[dict],
+    ) -> tuple[int, BulkMigrateRulesResponse | None]:
+        resp = self.base_client.post(
+            "/api/v1/migration/rules/bulk",
+            json={"rules": rules},
+            headers=self.authorized_org_admin_api_key_headers,
+        )
+        log_response(resp)
+        return (
+            resp.status_code,
+            (
+                BulkMigrateRulesResponse.model_validate(resp.json())
+                if resp.status_code == 200
+                else None
+            ),
+        )
+
+    def bulk_migrate_task_rule_links(
+        self,
+        task_to_rule_links: list[dict],
+    ) -> tuple[int, BulkMigrateTaskToRuleLinksResponse | None]:
+        resp = self.base_client.post(
+            "/api/v1/migration/task_rule_links/bulk",
+            json={"task_to_rule_links": task_to_rule_links},
+            headers=self.authorized_org_admin_api_key_headers,
+        )
+        log_response(resp)
+        return (
+            resp.status_code,
+            (
+                BulkMigrateTaskToRuleLinksResponse.model_validate(resp.json())
+                if resp.status_code == 200
+                else None
+            ),
+        )
+
+    def bulk_migrate_inferences(
+        self,
+        inferences: list[dict],
+        org_id: str,
+    ) -> tuple[int, BulkMigrateInferencesResponse | None]:
+        resp = self.base_client.post(
+            "/api/v1/migration/inferences/bulk",
+            json={"inferences": inferences, "org_id": org_id},
+            headers=self.authorized_org_admin_api_key_headers,
+        )
+        log_response(resp)
+        return (
+            resp.status_code,
+            (
+                BulkMigrateInferencesResponse.model_validate(resp.json())
+                if resp.status_code == 200
+                else None
+            ),
+        )
+
+    def bulk_migrate_feedback(
+        self,
+        feedback: list[dict],
+        org_id: str,
+    ) -> tuple[int, BulkMigrateFeedbackResponse | None]:
+        resp = self.base_client.post(
+            "/api/v1/migration/feedback/bulk",
+            json={"feedback": feedback, "org_id": org_id},
+            headers=self.authorized_org_admin_api_key_headers,
+        )
+        log_response(resp)
+        return (
+            resp.status_code,
+            (
+                BulkMigrateFeedbackResponse.model_validate(resp.json())
+                if resp.status_code == 200
+                else None
+            ),
         )
 
 
