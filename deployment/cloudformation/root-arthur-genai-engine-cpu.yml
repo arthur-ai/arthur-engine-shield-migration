@@ -236,6 +236,13 @@ Parameters:
       - 'disabled'
     Default: 'disabled'
     Description: 'Enable GenAI Engine demo mode'
+  GenaiEngineMigrationMode:
+    Type: String
+    AllowedValues:
+      - 'enabled'
+      - 'disabled'
+    Default: 'disabled'
+    Description: 'Enable GenAI Engine migration mode'
   GenaiEngineDefaultTenantTokenLimit:
     Type: String
     Default: ''
@@ -360,6 +367,7 @@ Metadata:
           - GenaiEngineServerWorkerCount
           - GenaiEngineCacheTaskRulesCacheEnabled
           - GenaiEngineCacheTaskRulesCacheTTL
+          - GenaiEngineMigrationMode
       - Label:
           default: 'Advanced GenAI Engine (IAM)'
         Parameters:
@@ -499,6 +507,8 @@ Metadata:
         default: 'GenAI Engine Use PII Model V2'
       GenaiEngineDemoMode:
         default: 'GenAI Engine Demo Mode'
+      GenaiEngineMigrationMode:
+        default: 'GenAI Engine Migration Mode'
       GenaiEngineDefaultTenantTokenLimit:
         default: 'GenAI Engine Default Tenant Token Limit'
       GenaiEngineOpenAIProvider:
@@ -668,6 +678,7 @@ Resources:
         GenaiEngineToxicityCheckMaxTokenLimit: !Ref GenaiEngineToxicityCheckMaxTokenLimit
         GenaiEngineUsePIIModelV2: !Ref GenaiEngineUsePIIModelV2
         GenaiEngineDemoMode: !Ref GenaiEngineDemoMode
+        GenaiEngineMigrationMode: !Ref GenaiEngineMigrationMode
         GenaiEngineDefaultTenantTokenLimit: !Ref GenaiEngineDefaultTenantTokenLimit
         RecaptchaEnterpriseProjectId: !Ref RecaptchaEnterpriseProjectId
         RecaptchaEnterpriseSiteKey: !Ref RecaptchaEnterpriseSiteKey
