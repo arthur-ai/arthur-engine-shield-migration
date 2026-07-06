@@ -8,6 +8,7 @@ from arthur_common.models.llm_model_providers import ModelProvider, OpenAIMessag
 from arthur_common.models.response_schemas import (
     AgenticAnnotationResponse,
     ExternalInference,
+    RuleResponse,
     SpanWithMetricsResponse,
     TokenCountCostSchema,
     TraceResponse,
@@ -1033,3 +1034,10 @@ class TraceTimeSeriesResponse(BaseModel):
 class CertificateUploadResponse(BaseModel):
     certificate_id: str
     certificate_url: str
+
+
+class TaskToRuleLinkResponse(BaseModel):
+    task_id: str
+    rule_id: str
+    enabled: bool
+    rule: RuleResponse

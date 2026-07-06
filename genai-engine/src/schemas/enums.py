@@ -235,6 +235,10 @@ class PermissionLevelsEnum(Enum):
         [constants.ORG_ADMIN, constants.TASK_ADMIN],
     )
 
+    MIGRATION_WRITE = frozenset(
+        [constants.ORG_ADMIN],
+    )
+
 
 class SecretType(str, Enum):
     MODEL_PROVIDER = "model_provider"

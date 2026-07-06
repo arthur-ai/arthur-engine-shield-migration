@@ -220,6 +220,7 @@ from schemas.response_schemas import (
     RagSearchSettingConfigurationVersionResponse,
     SessionMetadataResponse,
     SpanMetadataResponse,
+    TaskToRuleLinkResponse,
     TraceMetadataResponse,
     TraceUserMetadataResponse,
     WeaviateHybridSearchSettingsConfigurationResponse,
@@ -564,6 +565,14 @@ class TaskToRuleLink(BaseModel):
             rule_id=x.rule_id,
             enabled=x.enabled,
             rule=Rule._from_database_model(x.rule),
+        )
+
+    def to_response_model(self) -> TaskToRuleLinkResponse:
+        return TaskToRuleLinkResponse(
+            task_id=self.task_id,
+            rule_id=self.rule_id,
+            enabled=self.enabled,
+            rule=self.rule._to_response_model(),
         )
 
 
