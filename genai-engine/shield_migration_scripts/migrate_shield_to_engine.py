@@ -160,6 +160,7 @@ class Checkpoint:
       phases_completed        — list of phase names that finished successfully
       inference_page          — next Shield inference page to fetch (starts at 0)
       feedback_page           — next Shield feedback page to fetch (starts at 0)
+      migrated_task_ids       — task IDs inserted into the Engine (for cleanup)
       started_at / last_updated_at — ISO timestamps
     """
 
@@ -168,6 +169,8 @@ class Checkpoint:
         if os.path.exists(path):
             with open(path) as f:
                 self.state = json.load(f)
+            # Backfill keys added after this checkpoint was first written.
+            self.state.setdefault("migrated_task_ids", [])
         else:
             self.state = {
                 "from_dt": None,
@@ -175,6 +178,7 @@ class Checkpoint:
                 "phases_completed": [],
                 "inference_page": 0,
                 "feedback_page": 0,
+                "migrated_task_ids": [],
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -205,6 +209,15 @@ class Checkpoint:
 
     def phase_completed(self, phase: str) -> bool:
         return phase in self.state["phases_completed"]
+
+    def record_migrated_tasks(self, task_ids):
+        """Append newly inserted task IDs, de-duped, preserving order."""
+        existing = set(self.state["migrated_task_ids"])
+        for task_id in task_ids:
+            if task_id not in existing:
+                self.state["migrated_task_ids"].append(task_id)
+                existing.add(task_id)
+        self._save()
 
     def update_inference_page(self, page: int):
         self.state["inference_page"] = page
@@ -263,7 +276,11 @@ def migrate_config(ckpt: Checkpoint):
         "/api/v1/migration/tasks/bulk",
         {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
     )
-    inserted = len(resp.get("tasks", []))
+    inserted_tasks = resp.get("tasks", [])
+    ckpt.record_migrated_tasks(
+        [t["id"] for t in inserted_tasks if t.get("id")],
+    )
+    inserted = len(inserted_tasks)
     print(
         f"  Tasks: "
         f"    {inserted} inserted"
