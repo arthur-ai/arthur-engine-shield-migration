@@ -17,7 +17,10 @@ runs:
 
     - name: 'Configure safe directory'
       shell: bash
-      run: git config --global --add safe.directory "${{ github.workspace }}"
+      run: |
+        git config --global --add safe.directory "${{ inputs.safe-directory }}"
+        git config --global --add safe.directory "${{ github.workspace }}"
+        git config --global --add safe.directory '*'
 
     - name: 'Fetch tags'
       shell: bash
