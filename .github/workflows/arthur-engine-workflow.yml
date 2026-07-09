@@ -276,7 +276,6 @@ jobs:
       github.ref != 'refs/heads/dev' &&
       needs.check-genai-engine-changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    container: python:3.12.9-bullseye
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/workflows/composite-actions/setup-git
@@ -285,6 +284,12 @@ jobs:
       - uses: ./.github/workflows/composite-actions/setup-uv
         with:
           working-directory: genai-engine
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
       - name: Run unit tests
         shell: bash
         env:
