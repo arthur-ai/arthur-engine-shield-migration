@@ -20145,7 +20145,7 @@
                     "skipped": {
                         "type": "integer",
                         "title": "Skipped",
-                        "description": "The number of feedback items that already existed and were skipped"
+                        "description": "The number of feedback items that were skipped because they already existed or their parent inference was not migrated"
                     },
                     "org_id": {
                         "type": "string",
@@ -31721,6 +31721,11 @@
                         "type": "integer",
                         "title": "Updated At"
                     },
+                    "archived": {
+                        "type": "boolean",
+                        "title": "Archived",
+                        "default": false
+                    },
                     "config": {
                         "anyOf": [
                             {
@@ -31757,7 +31762,7 @@
                     "updated_at"
                 ],
                 "title": "ShieldRule",
-                "description": "A rule as returned by the Shield /default_rules and /rules/search\nendpoints (Shield's RuleResponse).\n\nShield serializes rules via Rule._to_response_model: apply_to_prompt/\napply_to_response flags, unix-millisecond timestamps, and an optional\nnested typed config object. It does NOT emit the engine's internal DB\nshape (prompt_enabled/response_enabled/scoring_method/rule_data/archived).\nto_engine_rule() converts this into the engine Rule, deriving rule_data\nfrom config the same way the engine does for a NewRuleRequest."
+                "description": "A rule as returned by the Shield /default_rules and /rules/search\nendpoints (Shield's RuleResponse).\n\nShield serializes rules via Rule._to_response_model: apply_to_prompt/\napply_to_response flags, unix-millisecond timestamps, and an optional\nnested typed config object. to_engine_rule() converts this into the engine\nRule, deriving rule_data from config the same way the engine does for a\nNewRuleRequest."
             },
             "ShieldRuleDetails": {
                 "properties": {

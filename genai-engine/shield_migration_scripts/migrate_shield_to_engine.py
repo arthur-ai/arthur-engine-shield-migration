@@ -256,17 +256,26 @@ def migrate_config(ckpt: Checkpoint):
         "count",
         "rules",
     )
-    all_active_rules = default_rules + task_rules
+    archived_rules = shield_paginate(
+        "/api/v2/rules/search",
+        {"include_archived": True},
+        "count",
+        "rules",
+    )
+    for rule in archived_rules:
+        rule["archived"] = True
+    all_rules = default_rules + task_rules + archived_rules
     print(
-        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped rules",
+        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped "
+        f"+ {len(archived_rules)} archived rules",
     )
 
-    resp = engine_post("/api/v1/migration/rules/bulk", {"rules": all_active_rules})
+    resp = engine_post("/api/v1/migration/rules/bulk", {"rules": all_rules})
     inserted = len(resp.get("rules", []))
     print(
         f"  Rules: "
         f"    {inserted} inserted"
-        f"    {len(all_active_rules) - inserted} skipped (already existed)",
+        f"    {len(all_rules) - inserted} skipped (already existed)",
     )
 
     # Strip the embedded rules array before sending tasks — links are sent

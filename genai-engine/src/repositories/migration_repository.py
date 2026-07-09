@@ -164,11 +164,29 @@ class MigrationRepository:
             )
         }
 
+        existing_inference_ids = {
+            row[0]
+            for row in self.db_session.query(DatabaseInference.id).filter(
+                DatabaseInference.id.in_(
+                    {fb.inference_id for fb in request.feedback},
+                ),
+            )
+        }
+
         inserted = 0
         skipped = 0
         for shield_feedback in request.feedback:
             if shield_feedback.id in existing_ids:
                 logger.info("Skipping feedback %s, already exists", shield_feedback.id)
+                skipped += 1
+                continue
+
+            if shield_feedback.inference_id not in existing_inference_ids:
+                logger.warning(
+                    "Skipping feedback %s, parent inference %s does not exist",
+                    shield_feedback.id,
+                    shield_feedback.inference_id,
+                )
                 skipped += 1
                 continue
 

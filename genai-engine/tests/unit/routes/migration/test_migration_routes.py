@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from db_models.rule_models import DatabaseRule
 from repositories.organizations_repository import OrganizationsRepository
 from tests.clients.base_test_client import (
     GenaiEngineTestClientBase,
@@ -208,3 +209,84 @@ def test_bulk_migrate_inferences_inserts_and_skips(
     assert status == 200
     assert second.inserted == 0
     assert second.skipped == 1
+
+
+@pytest.mark.unit_tests
+def test_bulk_migrate_rules_preserves_archived_flag(
+    client: GenaiEngineTestClientBase,
+):
+    rule_id = str(uuid.uuid4())
+    status, body = client.bulk_migrate_rules(
+        rules=[
+            {
+                "id": rule_id,
+                "name": "migrated-archived-rule",
+                "type": "PIIDataRule",
+                "apply_to_prompt": True,
+                "apply_to_response": False,
+                "scope": "default",
+                "created_at": MIGRATED_AT_MS,
+                "updated_at": MIGRATED_AT_MS,
+                "archived": True,
+                "config": None,
+            },
+        ],
+    )
+    assert status == 200
+    assert len(body.rules) == 1
+
+    db = override_get_db_session()
+    try:
+        db_rule = db.query(DatabaseRule).filter(DatabaseRule.id == rule_id).one()
+        assert db_rule.archived is True
+    finally:
+        db.close()
+
+
+@pytest.mark.unit_tests
+def test_bulk_migrate_feedback_skips_missing_parent_inference(
+    client: GenaiEngineTestClientBase,
+    migration_org: str,
+):
+    inference_id = str(uuid.uuid4())
+    status, _ = client.bulk_migrate_inferences(
+        inferences=[
+            {
+                "id": inference_id,
+                "result": "Pass",
+                "created_at": MIGRATED_AT_ISO,
+                "updated_at": MIGRATED_AT_ISO,
+                "task_id": None,
+                "conversation_id": None,
+                "user_id": None,
+                "inference_prompt": None,
+                "inference_response": None,
+                "inference_feedback": [],
+            },
+        ],
+        org_id=migration_org,
+    )
+    assert status == 200
+
+    def feedback_row(parent_id: str) -> dict:
+        return {
+            "id": str(uuid.uuid4()),
+            "inference_id": parent_id,
+            "target": "context",
+            "score": 1,
+            "reason": None,
+            "user_id": None,
+            "created_at": MIGRATED_AT_ISO,
+            "updated_at": MIGRATED_AT_ISO,
+        }
+
+    status, body = client.bulk_migrate_feedback(
+        feedback=[
+            feedback_row(inference_id),
+            feedback_row(str(uuid.uuid4())),
+        ],
+        org_id=migration_org,
+    )
+    assert status == 200
+    assert body.inserted == 1
+    assert body.skipped == 1

@@ -85,10 +85,9 @@ class ShieldRule(BaseModel):
 
     Shield serializes rules via Rule._to_response_model: apply_to_prompt/
     apply_to_response flags, unix-millisecond timestamps, and an optional
-    nested typed config object. It does NOT emit the engine's internal DB
-    shape (prompt_enabled/response_enabled/scoring_method/rule_data/archived).
-    to_engine_rule() converts this into the engine Rule, deriving rule_data
-    from config the same way the engine does for a NewRuleRequest.
+    nested typed config object. to_engine_rule() converts this into the engine
+    Rule, deriving rule_data from config the same way the engine does for a
+    NewRuleRequest.
     """
 
     id: str
@@ -100,6 +99,7 @@ class ShieldRule(BaseModel):
     # Shield emits timestamps as unix milliseconds.
     created_at: int
     updated_at: int
+    archived: bool = False
     config: Optional[
         KeywordsConfig | RegexConfig | ExamplesConfig | ToxicityConfig | PIIConfig
     ] = None
@@ -128,7 +128,7 @@ class ShieldRule(BaseModel):
             updated_at=datetime.utcfromtimestamp(self.updated_at / 1000),
             rule_data=rule_data,
             scope=self.scope,
-            archived=False,
+            archived=self.archived,
         )
 
 
@@ -527,7 +527,8 @@ class BulkMigrateFeedbackResponse(BaseModel):
     )
     skipped: int = Field(
         ...,
-        description="The number of feedback items that already existed and were skipped",
+        description="The number of feedback items that were skipped because they "
+        "already existed or their parent inference was not migrated",
     )
     org_id: UUID = Field(
         ...,

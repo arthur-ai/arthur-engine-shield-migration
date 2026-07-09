@@ -132,25 +132,39 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
 
     all_match = True
 
+    parent_where, parent_params = window_clause(from_dt, to_dt, column="i.created_at")
+    inference_tables = (
+        ("inferences", "inferences i"),
+        (
+            "inference_prompts",
+            "inference_prompts c JOIN inferences i ON c.inference_id = i.id",
+        ),
+        (
+            "inference_responses",
+            "inference_responses c JOIN inferences i ON c.inference_id = i.id",
+        ),
+        (
+            "inference_prompt_contents",
+            "inference_prompt_contents c "
+            "JOIN inference_prompts p ON c.inference_prompt_id = p.id "
+            "JOIN inferences i ON p.inference_id = i.id",
+        ),
+        (
+            "inference_response_contents",
+            "inference_response_contents c "
+            "JOIN inference_responses r ON c.inference_response_id = r.id "
+            "JOIN inferences i ON r.inference_id = i.id",
+        ),
+    )
+
     with shield.connect() as sc, engine.connect() as ec:
         # ── Inferences ──────────────────────────────────────────────────────
         lines.append("Inferences")
-        for table in (
-            "inferences",
-            "inference_prompts",
-            "inference_responses",
-            "inference_prompt_contents",
-            "inference_response_contents",
-        ):
-            # Only inferences carries created_at; children are counted in full
-            # (they are 1:1 / N:1 with the windowed inferences on both sides).
-            where, params = (
-                (inf_where, inf_params) if table == "inferences" else ("", {})
-            )
-            s = count(sc, table, where, params)
-            e = count(ec, table, where, params)
+        for label, from_sql in inference_tables:
+            s = count(sc, from_sql, parent_where, parent_params)
+            e = count(ec, from_sql, parent_where, parent_params)
             all_match = all_match and s == e
-            lines.append(compare(table, s, e))
+            lines.append(compare(label, s, e))
         lines.append("")
 
         # ── Validation results ──────────────────────────────────────────────
@@ -165,7 +179,19 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
 
         # ── Feedback ────────────────────────────────────────────────────────
         lines.append("Feedback")
-        s = count(sc, "inference_feedback", inf_where, inf_params)
+        fb_clauses = []
+        for column in ("f.created_at", "i.created_at"):
+            if from_dt:
+                fb_clauses.append(f"{column} >= :from_dt")
+            if to_dt:
+                fb_clauses.append(f"{column} < :to_dt")
+        fb_where = ("WHERE " + " AND ".join(fb_clauses)) if fb_clauses else ""
+        s = count(
+            sc,
+            "inference_feedback f JOIN inferences i ON f.inference_id = i.id",
+            fb_where,
+            inf_params,
+        )
         e = count(ec, "inference_feedback", org_where, org_params)
         all_match = all_match and s == e
         lines.append(compare("inference_feedback", s, e))
