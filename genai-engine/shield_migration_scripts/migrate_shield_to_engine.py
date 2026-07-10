@@ -171,6 +171,7 @@ class Checkpoint:
                 self.state = json.load(f)
             # Backfill keys added after this checkpoint was first written.
             self.state.setdefault("migrated_task_ids", [])
+            self.state.setdefault("migrated_taskless_inference_ids", [])
         else:
             self.state = {
                 "from_dt": None,
@@ -179,6 +180,7 @@ class Checkpoint:
                 "inference_page": 0,
                 "feedback_page": 0,
                 "migrated_task_ids": [],
+                "migrated_taskless_inference_ids": [],
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -217,6 +219,19 @@ class Checkpoint:
             if task_id not in existing:
                 self.state["migrated_task_ids"].append(task_id)
                 existing.add(task_id)
+        self._save()
+
+    def record_taskless_inferences(self, inference_ids):
+        """Append IDs of migrated inferences that have no task, de-duped.
+
+        These inferences are not reachable by a task-scoped cleanup, so the
+        delete script uses this list to remove them by ID.
+        """
+        existing = set(self.state["migrated_taskless_inference_ids"])
+        for inference_id in inference_ids:
+            if inference_id not in existing:
+                self.state["migrated_taskless_inference_ids"].append(inference_id)
+                existing.add(inference_id)
         self._save()
 
     def update_inference_page(self, page: int):
@@ -382,6 +397,12 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
             )
             inserted += post_resp.get("inserted", 0)
             skipped += post_resp.get("skipped", 0)
+
+        # Task-less inferences aren't reachable by task-scoped cleanup, so record
+        # their IDs for the delete script to remove them directly.
+        ckpt.record_taskless_inferences(
+            [inf["id"] for inf in batch if not inf.get("task_id")],
+        )
 
         processed += len(batch)
         page += 1

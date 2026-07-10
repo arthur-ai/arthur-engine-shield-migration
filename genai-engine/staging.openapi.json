@@ -17055,6 +17055,282 @@
                 ]
             }
         },
+        "/api/v1/migration/tasks/{task_id}/rule_results": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete rule results for a migrated task",
+                "description": "Delete all prompt and response rule results (and their detail rows) for a task",
+                "operationId": "delete_migrated_rule_results_api_v1_migration_tasks__task_id__rule_results_delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "task_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Task Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/migration/tasks/{task_id}/feedback": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete feedback for a migrated task",
+                "description": "Delete all feedback attached to a task's inferences",
+                "operationId": "delete_migrated_feedback_api_v1_migration_tasks__task_id__feedback_delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "task_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Task Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/migration/tasks/{task_id}/inferences": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete inferences for a migrated task",
+                "description": "Delete all inferences (and their prompt/response subtree) for a task",
+                "operationId": "delete_migrated_inferences_api_v1_migration_tasks__task_id__inferences_delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "task_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Task Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/migration/tasks/{task_id}/rules": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete rule links and orphaned rules for a migrated task",
+                "description": "Delete all task-to-rule links for a task, and any rules left unlinked from every task as a result",
+                "operationId": "delete_migrated_rules_api_v1_migration_tasks__task_id__rules_delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "task_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Task Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/migration/tasks/{task_id}": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete a migrated task",
+                "description": "Delete the task row itself. Children must be deleted first.",
+                "operationId": "delete_migrated_task_api_v1_migration_tasks__task_id__delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "task_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Task Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/migration/inferences/{inference_id}": {
+            "delete": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Delete a migrated task-less inference",
+                "description": "Delete a single inference (and its full subtree) that has no task",
+                "operationId": "delete_migrated_taskless_inference_api_v1_migration_inferences__inference_id__delete",
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "inference_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Inference Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/tasks/{task_id}/chatbot/stream": {
             "post": {
                 "tags": [
