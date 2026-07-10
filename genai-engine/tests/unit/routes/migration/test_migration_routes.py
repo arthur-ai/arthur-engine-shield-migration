@@ -1,9 +1,13 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Generator
 
 import pytest
 
+from db_models.inference_models import DatabaseInference, DatabaseInferenceFeedback
+from db_models.organization_models import DatabaseOrganization
 from db_models.rule_models import DatabaseRule
+from db_models.task_models import DatabaseTask
 from repositories.organizations_repository import OrganizationsRepository
 from tests.clients.base_test_client import (
     GenaiEngineTestClientBase,
@@ -17,8 +21,18 @@ MIGRATED_AT_MS = int(MIGRATED_AT.timestamp() * 1000)
 MIGRATED_AT_ISO = MIGRATED_AT.isoformat()
 
 
+def delete_rows(model, *row_ids):
+    db = override_get_db_session()
+    try:
+        for row_id in row_ids:
+            db.query(model).filter(model.id == row_id).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture
-def migration_org() -> str:
+def migration_org() -> Generator[str, None, None]:
     """Create a real organization and return its id.
 
     The tasks endpoint validates that the target org exists, so tests need an
@@ -29,7 +43,21 @@ def migration_org() -> str:
         org = OrganizationsRepository(db).create_organization(
             name=f"migration-test-org-{uuid.uuid4()}",
         )
-        return str(org.id)
+        org_id = str(org.id)
+    finally:
+        db.close()
+
+    yield org_id
+
+    db = override_get_db_session()
+    try:
+        db.query(DatabaseTask).filter(
+            DatabaseTask.org_id == uuid.UUID(org_id),
+        ).delete()
+        db.query(DatabaseOrganization).filter(
+            DatabaseOrganization.id == uuid.UUID(org_id),
+        ).delete()
+        db.commit()
     finally:
         db.close()
 
@@ -175,6 +203,8 @@ def test_bulk_migrate_rules_creates_rule(client: GenaiEngineTestClientBase):
     assert len(body.rules) == 1
     assert body.rules[0].id == rule_id
 
+    delete_rows(DatabaseRule, rule_id)
+
 
 @pytest.mark.unit_tests
 def test_bulk_migrate_inferences_inserts_and_skips(
@@ -210,6 +240,8 @@ def test_bulk_migrate_inferences_inserts_and_skips(
     assert second.inserted == 0
     assert second.skipped == 1
 
+    delete_rows(DatabaseInference, inference["id"])
+
 
 @pytest.mark.unit_tests
 def test_bulk_migrate_rules_preserves_archived_flag(
@@ -241,6 +273,8 @@ def test_bulk_migrate_rules_preserves_archived_flag(
         assert db_rule.archived is True
     finally:
         db.close()
+
+    delete_rows(DatabaseRule, rule_id)
 
 
 @pytest.mark.unit_tests
@@ -280,13 +314,16 @@ def test_bulk_migrate_feedback_skips_missing_parent_inference(
             "updated_at": MIGRATED_AT_ISO,
         }
 
+    valid_feedback = feedback_row(inference_id)
+    orphan_feedback = feedback_row(str(uuid.uuid4()))
+
     status, body = client.bulk_migrate_feedback(
-        feedback=[
-            feedback_row(inference_id),
-            feedback_row(str(uuid.uuid4())),
-        ],
+        feedback=[valid_feedback, orphan_feedback],
         org_id=migration_org,
     )
     assert status == 200
     assert body.inserted == 1
     assert body.skipped == 1
+
+    delete_rows(DatabaseInferenceFeedback, valid_feedback["id"])
+    delete_rows(DatabaseInference, inference_id)
