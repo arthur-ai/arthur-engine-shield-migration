@@ -9,9 +9,9 @@ The typical flow is:
 3. **`verify_counts.py`** — confirm source and target row counts match afterward.
 
 All three take the same date-window flags — `--last-days`, or `--from-date`
-(with an optional `--to-date` that defaults to now). Use the **same window**
-across all three so the sizing, migration, and verification cover exactly the
-same data.
+(with an optional `--to-date` that defaults to now). Use the **same window**. Across all three so the sizing, migration, and verification cover exactly the same data.
+
+There is also **`delete_migrated_resources.py`** for rolling back a migration. It deletes everything a specific migration run inserted into the Engine, using that run's checkpoint file.
 
 Shared dependencies:
 
@@ -228,6 +228,12 @@ python migrate_shield_to_engine.py --phase inferences --resume migration_states/
 > Progress is checkpointed per phase, so re-running with the same window skips
 > work that already completed.
 
+The checkpoint file also records the IDs of every task the run migrated
+(`migrated_task_ids`) and of every migrated inference that has no task
+(`migrated_taskless_inference_ids`). These lists are what
+`delete_migrated_resources.py` uses to roll the migration back, so keep the
+checkpoint file around after a run completes.
+
 ## `verify_counts.py`
 
 Run **after** a migration to confirm it was complete. It connects to **both**
@@ -326,3 +332,43 @@ Rows for org-scoped resources missing an org_id (each should be 0)
   RESULT: ALL MATCH ✓
 ======================================================================
 ```
+
+## `delete_migrated_resources.py`
+
+Rolls back a migration. It reads the `migrated_task_ids` and
+`migrated_taskless_inference_ids` recorded in a migration run's checkpoint
+file and deletes everything that run inserted, through the **Engine migration API**.
+
+For each migrated task it deletes: rule results, feedback, inferences, task–rule links (plus any rules left unlinked from every task as a
+result), and finally the task itself. Task-less inferences recorded in the
+checkpoint are then deleted individually by ID.
+
+**The script is a dry run by default** — it only lists what it would delete. Pass `--execute` to actually delete.
+
+### Setup
+
+| Variable | Description |
+|---|---|
+| `ENGINE_BASE_URL` | Base URL of the Engine API (no trailing slash) |
+| `ENGINE_API_KEY` | Engine admin API key |
+| `MIGRATION_TIMEOUT` | *(optional)* per-request HTTP timeout in seconds, default `30` |
+
+### Usage
+
+```bash
+# Dry run — list the tasks and task-less inferences that would be deleted
+python delete_migrated_resources.py --save-file migration_states/migration_state_2026-01-09_to_2026-07-08.json
+
+# Actually delete
+python delete_migrated_resources.py --save-file migration_states/migration_state_2026-01-09_to_2026-07-08.json --execute
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--save-file` | Path to the `migration_state_*.json` checkpoint of the run to roll back. Required. |
+| `--execute` | Actually delete. Without it, the script only prints what it would delete. |
+
+> **Warning:** Deletion is permanent. Run without `--execute` first and review
+> the list of tasks, then re-run with `--execute`.

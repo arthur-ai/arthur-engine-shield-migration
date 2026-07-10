@@ -4,8 +4,25 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from db_models.inference_models import DatabaseInference, DatabaseInferenceFeedback
-from db_models.rule_models import DatabaseRule
+from db_models.inference_models import (
+    DatabaseInference,
+    DatabaseInferenceFeedback,
+    DatabaseInferencePrompt,
+    DatabaseInferencePromptContent,
+    DatabaseInferenceResponse,
+    DatabaseInferenceResponseContent,
+)
+from db_models.rule_models import DatabaseRule, DatabaseRuleData
+from db_models.rule_result_models import (
+    DatabaseHallucinationClaim,
+    DatabaseKeywordEntity,
+    DatabasePIIEntity,
+    DatabasePromptRuleResult,
+    DatabaseRegexEntity,
+    DatabaseResponseRuleResult,
+    DatabaseRuleResultDetail,
+    DatabaseToxicityScore,
+)
 from db_models.task_models import DatabaseTask, DatabaseTaskToRules
 from repositories.rules_repository import RuleRepository
 from repositories.tasks_repository import TaskRepository
@@ -195,3 +212,205 @@ class MigrationRepository:
 
         self.db_session.commit()
         return inserted, skipped
+
+    def inference_ids_for_task(self, task_id: str) -> list[str]:
+        return [
+            row[0]
+            for row in self.db_session.query(DatabaseInference.id).filter(
+                DatabaseInference.task_id == task_id,
+            )
+        ]
+
+    def delete_rule_results_for_inferences(self, inference_ids: list[str]) -> int:
+        prompt_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseInferencePrompt.id).filter(
+                DatabaseInferencePrompt.inference_id.in_(inference_ids),
+            )
+        ]
+        response_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseInferenceResponse.id).filter(
+                DatabaseInferenceResponse.inference_id.in_(inference_ids),
+            )
+        ]
+
+        prompt_result_ids = [
+            row[0]
+            for row in self.db_session.query(DatabasePromptRuleResult.id).filter(
+                DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
+            )
+        ]
+        response_result_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseResponseRuleResult.id).filter(
+                DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
+            )
+        ]
+
+        detail_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseRuleResultDetail.id).filter(
+                DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
+                | DatabaseRuleResultDetail.response_rule_result_id.in_(
+                    response_result_ids,
+                ),
+            )
+        ]
+
+        detail_child_models = (
+            DatabaseHallucinationClaim,
+            DatabasePIIEntity,
+            DatabaseKeywordEntity,
+            DatabaseRegexEntity,
+            DatabaseToxicityScore,
+        )
+        for detail_child_model in detail_child_models:
+            self.db_session.query(detail_child_model).filter(
+                detail_child_model.rule_result_detail_id.in_(detail_ids),
+            ).delete(synchronize_session=False)
+
+        self.db_session.query(DatabaseRuleResultDetail).filter(
+            DatabaseRuleResultDetail.id.in_(detail_ids),
+        ).delete(synchronize_session=False)
+
+        deleted = (
+            self.db_session.query(DatabasePromptRuleResult)
+            .filter(
+                DatabasePromptRuleResult.id.in_(prompt_result_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        deleted += (
+            self.db_session.query(DatabaseResponseRuleResult)
+            .filter(
+                DatabaseResponseRuleResult.id.in_(response_result_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+
+        self.db_session.commit()
+        return deleted
+
+    def delete_feedback_for_inferences(self, inference_ids: list[str]) -> int:
+        deleted = (
+            self.db_session.query(DatabaseInferenceFeedback)
+            .filter(
+                DatabaseInferenceFeedback.inference_id.in_(inference_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db_session.commit()
+        return deleted
+
+    def delete_inferences_by_id(self, inference_ids: list[str]) -> int:
+        prompt_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseInferencePrompt.id).filter(
+                DatabaseInferencePrompt.inference_id.in_(inference_ids),
+            )
+        ]
+        response_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseInferenceResponse.id).filter(
+                DatabaseInferenceResponse.inference_id.in_(inference_ids),
+            )
+        ]
+
+        self.db_session.query(DatabaseInferencePromptContent).filter(
+            DatabaseInferencePromptContent.inference_prompt_id.in_(prompt_ids),
+        ).delete(synchronize_session=False)
+        self.db_session.query(DatabaseInferenceResponseContent).filter(
+            DatabaseInferenceResponseContent.inference_response_id.in_(response_ids),
+        ).delete(synchronize_session=False)
+
+        self.db_session.query(DatabaseInferencePrompt).filter(
+            DatabaseInferencePrompt.id.in_(prompt_ids),
+        ).delete(synchronize_session=False)
+        self.db_session.query(DatabaseInferenceResponse).filter(
+            DatabaseInferenceResponse.id.in_(response_ids),
+        ).delete(synchronize_session=False)
+
+        deleted = (
+            self.db_session.query(DatabaseInference)
+            .filter(
+                DatabaseInference.id.in_(inference_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db_session.commit()
+        return deleted
+
+    def delete_rule_results_for_task(self, task_id: str) -> int:
+        return self.delete_rule_results_for_inferences(
+            self.inference_ids_for_task(task_id),
+        )
+
+    def delete_feedback_for_task(self, task_id: str) -> int:
+        return self.delete_feedback_for_inferences(
+            self.inference_ids_for_task(task_id),
+        )
+
+    def delete_inferences_for_task(self, task_id: str) -> int:
+        return self.delete_inferences_by_id(self.inference_ids_for_task(task_id))
+
+    def delete_taskless_inference(self, inference_id: str) -> int:
+        """Delete a single inference (with no task) and its full subtree.
+
+        Removes rule results, feedback, and the inference subtree in FK-safe
+        order for one inference ID. Used for inferences migrated with no task,
+        which a task-scoped cleanup cannot reach.
+        """
+        inference_ids = [inference_id]
+        self.delete_rule_results_for_inferences(inference_ids)
+        self.delete_feedback_for_inferences(inference_ids)
+        return self.delete_inferences_by_id(inference_ids)
+
+    def delete_orphaned_rules_for_task(self, task_id: str) -> int:
+        linked_rule_ids = [
+            row[0]
+            for row in self.db_session.query(DatabaseTaskToRules.rule_id).filter(
+                DatabaseTaskToRules.task_id == task_id,
+            )
+        ]
+
+        self.db_session.query(DatabaseTaskToRules).filter(
+            DatabaseTaskToRules.task_id == task_id,
+        ).delete(synchronize_session=False)
+
+        still_linked_rule_ids = {
+            row[0]
+            for row in self.db_session.query(DatabaseTaskToRules.rule_id)
+            .filter(DatabaseTaskToRules.rule_id.in_(linked_rule_ids))
+            .distinct()
+        }
+        orphaned_rule_ids = [
+            rule_id
+            for rule_id in linked_rule_ids
+            if rule_id not in still_linked_rule_ids
+        ]
+
+        self.db_session.query(DatabaseRuleData).filter(
+            DatabaseRuleData.rule_id.in_(orphaned_rule_ids),
+        ).delete(synchronize_session=False)
+
+        deleted = (
+            self.db_session.query(DatabaseRule)
+            .filter(
+                DatabaseRule.id.in_(orphaned_rule_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db_session.commit()
+        return deleted
+
+    def delete_migrated_task(self, task_id: str) -> int:
+        deleted = (
+            self.db_session.query(DatabaseTask)
+            .filter(
+                DatabaseTask.id == task_id,
+            )
+            .delete(synchronize_session=False)
+        )
+        self.db_session.commit()
+        return deleted
