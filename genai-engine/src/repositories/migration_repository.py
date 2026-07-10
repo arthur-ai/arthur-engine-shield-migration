@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional
 from uuid import UUID
 
+from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
 from db_models.inference_models import (
@@ -213,50 +214,35 @@ class MigrationRepository:
         self.db_session.commit()
         return inserted, skipped
 
-    def inference_ids_for_task(self, task_id: str) -> list[str]:
-        return [
-            row[0]
-            for row in self.db_session.query(DatabaseInference.id).filter(
-                DatabaseInference.task_id == task_id,
-            )
-        ]
+    def inference_ids_for_task(self, task_id: str) -> Select[tuple[str]]:
+        return select(DatabaseInference.id).where(
+            DatabaseInference.task_id == task_id,
+        )
 
-    def delete_rule_results_for_inferences(self, inference_ids: list[str]) -> int:
-        prompt_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseInferencePrompt.id).filter(
-                DatabaseInferencePrompt.inference_id.in_(inference_ids),
-            )
-        ]
-        response_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseInferenceResponse.id).filter(
-                DatabaseInferenceResponse.inference_id.in_(inference_ids),
-            )
-        ]
+    def delete_rule_results_for_inferences(
+        self,
+        inference_ids: list[str] | Select[tuple[str]],
+    ) -> int:
+        prompt_ids = select(DatabaseInferencePrompt.id).where(
+            DatabaseInferencePrompt.inference_id.in_(inference_ids),
+        )
+        response_ids = select(DatabaseInferenceResponse.id).where(
+            DatabaseInferenceResponse.inference_id.in_(inference_ids),
+        )
 
-        prompt_result_ids = [
-            row[0]
-            for row in self.db_session.query(DatabasePromptRuleResult.id).filter(
-                DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
-            )
-        ]
-        response_result_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseResponseRuleResult.id).filter(
-                DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
-            )
-        ]
+        prompt_result_ids = select(DatabasePromptRuleResult.id).where(
+            DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
+        )
+        response_result_ids = select(DatabaseResponseRuleResult.id).where(
+            DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
+        )
 
-        detail_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseRuleResultDetail.id).filter(
-                DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
-                | DatabaseRuleResultDetail.response_rule_result_id.in_(
-                    response_result_ids,
-                ),
-            )
-        ]
+        detail_ids = select(DatabaseRuleResultDetail.id).where(
+            DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
+            | DatabaseRuleResultDetail.response_rule_result_id.in_(
+                response_result_ids,
+            ),
+        )
 
         detail_child_models = (
             DatabaseHallucinationClaim,
@@ -271,20 +257,23 @@ class MigrationRepository:
             ).delete(synchronize_session=False)
 
         self.db_session.query(DatabaseRuleResultDetail).filter(
-            DatabaseRuleResultDetail.id.in_(detail_ids),
+            DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
+            | DatabaseRuleResultDetail.response_rule_result_id.in_(
+                response_result_ids,
+            ),
         ).delete(synchronize_session=False)
 
         deleted = (
             self.db_session.query(DatabasePromptRuleResult)
             .filter(
-                DatabasePromptRuleResult.id.in_(prompt_result_ids),
+                DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
             )
             .delete(synchronize_session=False)
         )
         deleted += (
             self.db_session.query(DatabaseResponseRuleResult)
             .filter(
-                DatabaseResponseRuleResult.id.in_(response_result_ids),
+                DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
             )
             .delete(synchronize_session=False)
         )
@@ -292,7 +281,10 @@ class MigrationRepository:
         self.db_session.commit()
         return deleted
 
-    def delete_feedback_for_inferences(self, inference_ids: list[str]) -> int:
+    def delete_feedback_for_inferences(
+        self,
+        inference_ids: list[str] | Select[tuple[str]],
+    ) -> int:
         deleted = (
             self.db_session.query(DatabaseInferenceFeedback)
             .filter(
@@ -303,19 +295,16 @@ class MigrationRepository:
         self.db_session.commit()
         return deleted
 
-    def delete_inferences_by_id(self, inference_ids: list[str]) -> int:
-        prompt_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseInferencePrompt.id).filter(
-                DatabaseInferencePrompt.inference_id.in_(inference_ids),
-            )
-        ]
-        response_ids = [
-            row[0]
-            for row in self.db_session.query(DatabaseInferenceResponse.id).filter(
-                DatabaseInferenceResponse.inference_id.in_(inference_ids),
-            )
-        ]
+    def delete_inferences_by_id(
+        self,
+        inference_ids: list[str] | Select[tuple[str]],
+    ) -> int:
+        prompt_ids = select(DatabaseInferencePrompt.id).where(
+            DatabaseInferencePrompt.inference_id.in_(inference_ids),
+        )
+        response_ids = select(DatabaseInferenceResponse.id).where(
+            DatabaseInferenceResponse.inference_id.in_(inference_ids),
+        )
 
         self.db_session.query(DatabaseInferencePromptContent).filter(
             DatabaseInferencePromptContent.inference_prompt_id.in_(prompt_ids),
@@ -325,10 +314,10 @@ class MigrationRepository:
         ).delete(synchronize_session=False)
 
         self.db_session.query(DatabaseInferencePrompt).filter(
-            DatabaseInferencePrompt.id.in_(prompt_ids),
+            DatabaseInferencePrompt.inference_id.in_(inference_ids),
         ).delete(synchronize_session=False)
         self.db_session.query(DatabaseInferenceResponse).filter(
-            DatabaseInferenceResponse.id.in_(response_ids),
+            DatabaseInferenceResponse.inference_id.in_(inference_ids),
         ).delete(synchronize_session=False)
 
         deleted = (
