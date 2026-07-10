@@ -55,6 +55,7 @@ from routers.v1.continuous_eval_routes import continuous_eval_routes
 from routers.v1.demo_task_routes import demo_task_routes
 from routers.v1.legacy_span_routes import span_routes
 from routers.v1.llm_eval_routes import llm_eval_routes
+from routers.v1.migration_routes import migration_routes
 from routers.v1.model_provider_routes import model_provider_routes
 from routers.v1.notebook_routes import notebook_routes
 from routers.v1.prompt_experiment_routes import prompt_experiment_routes
@@ -507,6 +508,7 @@ def get_app_with_routes() -> FastAPI:
             demo_task_routes,
             demo_certificate_routes,
             tenant_signup_routes,
+            migration_routes,
         ],
     )
     if extra_feature_config.CHATBOT_ENABLED:
@@ -563,6 +565,7 @@ def get_test_app() -> FastAPI:
             demo_task_routes,
             demo_certificate_routes,
             tenant_signup_routes,
+            migration_routes,
         ],
     )
     add_routers(app, [auth_routes, user_management_routes, user_identity_routes])
@@ -629,6 +632,8 @@ def get_app() -> FastAPI:
         add_routers(app, [chatbot_routes])
     if Config.demo_mode():
         add_routers(app, [demo_task_routes, demo_certificate_routes])
+    if Config.migration_mode():
+        add_routers(app, [migration_routes])
     if extra_feature_config.CHAT_ENABLED:
         add_routers(app, [app_chat_routes])
     if extra_feature_config.DEMO_MODE:

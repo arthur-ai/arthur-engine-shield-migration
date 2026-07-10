@@ -16820,6 +16820,241 @@
                 }
             }
         },
+        "/api/v1/migration/tasks/bulk": {
+            "post": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Bulk migrate tasks",
+                "description": "Bulk migrate tasks",
+                "operationId": "bulk_migrate_tasks_api_v1_migration_tasks_bulk_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BulkMigrateTasksRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BulkMigrateTasksResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ]
+            }
+        },
+        "/api/v1/migration/rules/bulk": {
+            "post": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Bulk migrate rules",
+                "description": "Bulk migrate rules",
+                "operationId": "bulk_migrate_rules_api_v1_migration_rules_bulk_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BulkMigrateRulesRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BulkMigrateRulesResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ]
+            }
+        },
+        "/api/v1/migration/task_rule_links/bulk": {
+            "post": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Bulk migrate task to rule links",
+                "description": "Bulk migrate task to rule links",
+                "operationId": "bulk_migrate_task_rule_links_api_v1_migration_task_rule_links_bulk_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BulkMigrateTaskToRuleLinksRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BulkMigrateTaskToRuleLinksResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ]
+            }
+        },
+        "/api/v1/migration/inferences/bulk": {
+            "post": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Bulk migrate inferences",
+                "description": "Bulk migrate inferences",
+                "operationId": "bulk_migrate_inferences_api_v1_migration_inferences_bulk_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BulkMigrateInferencesRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BulkMigrateInferencesResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ]
+            }
+        },
+        "/api/v1/migration/feedback/bulk": {
+            "post": {
+                "tags": [
+                    "Migration"
+                ],
+                "summary": "Bulk migrate feedback",
+                "description": "Bulk migrate feedback",
+                "operationId": "bulk_migrate_feedback_api_v1_migration_feedback_bulk_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/BulkMigrateFeedbackRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BulkMigrateFeedbackResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "API Key": []
+                    }
+                ]
+            }
+        },
         "/api/v1/tasks/{task_id}/chatbot/stream": {
             "post": {
                 "tags": [
@@ -19875,6 +20110,224 @@
                     "results"
                 ],
                 "title": "BuiltinValidationResponse"
+            },
+            "BulkMigrateFeedbackRequest": {
+                "properties": {
+                    "feedback": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldInferenceFeedback"
+                        },
+                        "type": "array",
+                        "title": "Feedback",
+                        "description": "The feedback to migrate"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID to migrate the feedback to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "feedback",
+                    "org_id"
+                ],
+                "title": "BulkMigrateFeedbackRequest"
+            },
+            "BulkMigrateFeedbackResponse": {
+                "properties": {
+                    "inserted": {
+                        "type": "integer",
+                        "title": "Inserted",
+                        "description": "The number of feedback items that were inserted"
+                    },
+                    "skipped": {
+                        "type": "integer",
+                        "title": "Skipped",
+                        "description": "The number of feedback items that were skipped because they already existed or their parent inference was not migrated"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID that the feedback was migrated to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "inserted",
+                    "skipped",
+                    "org_id"
+                ],
+                "title": "BulkMigrateFeedbackResponse"
+            },
+            "BulkMigrateInferencesRequest": {
+                "properties": {
+                    "inferences": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldInference"
+                        },
+                        "type": "array",
+                        "title": "Inferences",
+                        "description": "The inferences to migrate"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID to migrate the inferences to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "inferences",
+                    "org_id"
+                ],
+                "title": "BulkMigrateInferencesRequest"
+            },
+            "BulkMigrateInferencesResponse": {
+                "properties": {
+                    "inserted": {
+                        "type": "integer",
+                        "title": "Inserted",
+                        "description": "The number of inferences that were inserted"
+                    },
+                    "skipped": {
+                        "type": "integer",
+                        "title": "Skipped",
+                        "description": "The number of inferences that already existed and were skipped"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID that the inferences were migrated to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "inserted",
+                    "skipped",
+                    "org_id"
+                ],
+                "title": "BulkMigrateInferencesResponse"
+            },
+            "BulkMigrateRulesRequest": {
+                "properties": {
+                    "rules": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldRule"
+                        },
+                        "type": "array",
+                        "title": "Rules",
+                        "description": "The rules to migrate"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "rules"
+                ],
+                "title": "BulkMigrateRulesRequest"
+            },
+            "BulkMigrateRulesResponse": {
+                "properties": {
+                    "rules": {
+                        "items": {
+                            "$ref": "#/components/schemas/RuleResponse"
+                        },
+                        "type": "array",
+                        "title": "Rules",
+                        "description": "The rules that were migrated"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "rules"
+                ],
+                "title": "BulkMigrateRulesResponse"
+            },
+            "BulkMigrateTaskToRuleLinksRequest": {
+                "properties": {
+                    "task_to_rule_links": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldTaskToRuleLink"
+                        },
+                        "type": "array",
+                        "title": "Task To Rule Links",
+                        "description": "The task to rule links to migrate"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "task_to_rule_links"
+                ],
+                "title": "BulkMigrateTaskToRuleLinksRequest"
+            },
+            "BulkMigrateTaskToRuleLinksResponse": {
+                "properties": {
+                    "task_to_rule_links": {
+                        "items": {
+                            "$ref": "#/components/schemas/TaskToRuleLinkResponse"
+                        },
+                        "type": "array",
+                        "title": "Task To Rule Links",
+                        "description": "The task to rule links that were migrated"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "task_to_rule_links"
+                ],
+                "title": "BulkMigrateTaskToRuleLinksResponse"
+            },
+            "BulkMigrateTasksRequest": {
+                "properties": {
+                    "tasks": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldTask"
+                        },
+                        "type": "array",
+                        "title": "Tasks",
+                        "description": "The tasks to migrate"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID to migrate the tasks to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tasks",
+                    "org_id"
+                ],
+                "title": "BulkMigrateTasksRequest"
+            },
+            "BulkMigrateTasksResponse": {
+                "properties": {
+                    "tasks": {
+                        "items": {
+                            "$ref": "#/components/schemas/TaskResponse"
+                        },
+                        "type": "array",
+                        "title": "Tasks",
+                        "description": "The tasks that were migrated"
+                    },
+                    "org_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "title": "Org Id",
+                        "description": "The org ID that the tasks were migrated to"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "tasks",
+                    "org_id"
+                ],
+                "title": "BulkMigrateTasksResponse"
             },
             "CertificateUploadResponse": {
                 "properties": {
@@ -30748,6 +31201,735 @@
                 "title": "SetRagNotebookStateRequest",
                 "description": "Request to set the RAG notebook state"
             },
+            "ShieldHallucinationClaim": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "claim": {
+                        "type": "string",
+                        "title": "Claim"
+                    },
+                    "valid": {
+                        "type": "boolean",
+                        "title": "Valid"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "title": "Reason"
+                    },
+                    "order_number": {
+                        "type": "integer",
+                        "title": "Order Number"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "claim",
+                    "valid",
+                    "reason",
+                    "order_number"
+                ],
+                "title": "ShieldHallucinationClaim"
+            },
+            "ShieldInference": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "result": {
+                        "$ref": "#/components/schemas/RuleResultEnum"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    },
+                    "task_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Task Id"
+                    },
+                    "conversation_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Conversation Id"
+                    },
+                    "user_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "User Id"
+                    },
+                    "inference_prompt": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ShieldInferencePrompt"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "inference_response": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ShieldInferenceResponse"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "inference_feedback": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldInferenceFeedback"
+                        },
+                        "type": "array",
+                        "title": "Inference Feedback",
+                        "default": []
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "result",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldInference"
+            },
+            "ShieldInferenceFeedback": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "inference_id": {
+                        "type": "string",
+                        "title": "Inference Id"
+                    },
+                    "target": {
+                        "$ref": "#/components/schemas/InferenceFeedbackTarget"
+                    },
+                    "score": {
+                        "type": "integer",
+                        "title": "Score"
+                    },
+                    "reason": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Reason"
+                    },
+                    "user_id": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "User Id"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "inference_id",
+                    "target",
+                    "score",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldInferenceFeedback"
+            },
+            "ShieldInferencePrompt": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "inference_id": {
+                        "type": "string",
+                        "title": "Inference Id"
+                    },
+                    "result": {
+                        "$ref": "#/components/schemas/RuleResultEnum"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    },
+                    "message": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Message"
+                    },
+                    "tokens": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tokens"
+                    },
+                    "rule_results": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldInferenceRuleResult"
+                        },
+                        "type": "array",
+                        "title": "Rule Results",
+                        "default": []
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "inference_id",
+                    "result",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldInferencePrompt"
+            },
+            "ShieldInferenceResponse": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "inference_id": {
+                        "type": "string",
+                        "title": "Inference Id"
+                    },
+                    "result": {
+                        "$ref": "#/components/schemas/RuleResultEnum"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    },
+                    "message": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Message"
+                    },
+                    "context": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Context"
+                    },
+                    "tokens": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tokens"
+                    },
+                    "rule_results": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldInferenceRuleResult"
+                        },
+                        "type": "array",
+                        "title": "Rule Results",
+                        "default": []
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "inference_id",
+                    "result",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldInferenceResponse"
+            },
+            "ShieldInferenceRule": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "name": {
+                        "type": "string",
+                        "title": "Name"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/RuleType"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/RuleScope"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "name",
+                    "type",
+                    "scope"
+                ],
+                "title": "ShieldInferenceRule"
+            },
+            "ShieldInferenceRuleResult": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "rule": {
+                        "$ref": "#/components/schemas/ShieldInferenceRule"
+                    },
+                    "rule_result": {
+                        "$ref": "#/components/schemas/RuleResultEnum"
+                    },
+                    "prompt_tokens": {
+                        "type": "integer",
+                        "title": "Prompt Tokens"
+                    },
+                    "completion_tokens": {
+                        "type": "integer",
+                        "title": "Completion Tokens"
+                    },
+                    "latency_ms": {
+                        "type": "integer",
+                        "title": "Latency Ms"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "title": "Updated At"
+                    },
+                    "rule_details": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ShieldRuleDetails"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "rule",
+                    "rule_result",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "latency_ms",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldInferenceRuleResult"
+            },
+            "ShieldKeywordMatch": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "title": "Keyword"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "keyword"
+                ],
+                "title": "ShieldKeywordMatch"
+            },
+            "ShieldPIIEntity": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "entity": {
+                        "type": "string",
+                        "title": "Entity"
+                    },
+                    "span": {
+                        "type": "string",
+                        "title": "Span"
+                    },
+                    "confidence": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Confidence"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "entity",
+                    "span"
+                ],
+                "title": "ShieldPIIEntity"
+            },
+            "ShieldRegexMatch": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "matching_text": {
+                        "type": "string",
+                        "title": "Matching Text"
+                    },
+                    "pattern": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Pattern"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "matching_text"
+                ],
+                "title": "ShieldRegexMatch"
+            },
+            "ShieldRule": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "name": {
+                        "type": "string",
+                        "title": "Name"
+                    },
+                    "type": {
+                        "$ref": "#/components/schemas/ShieldRuleType"
+                    },
+                    "apply_to_prompt": {
+                        "type": "boolean",
+                        "title": "Apply To Prompt"
+                    },
+                    "apply_to_response": {
+                        "type": "boolean",
+                        "title": "Apply To Response"
+                    },
+                    "scope": {
+                        "$ref": "#/components/schemas/RuleScope"
+                    },
+                    "created_at": {
+                        "type": "integer",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "integer",
+                        "title": "Updated At"
+                    },
+                    "archived": {
+                        "type": "boolean",
+                        "title": "Archived",
+                        "default": false
+                    },
+                    "config": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/KeywordsConfig"
+                            },
+                            {
+                                "$ref": "#/components/schemas/RegexConfig"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ExamplesConfig"
+                            },
+                            {
+                                "$ref": "#/components/schemas/ToxicityConfig"
+                            },
+                            {
+                                "$ref": "#/components/schemas/PIIConfig"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Config"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "name",
+                    "type",
+                    "apply_to_prompt",
+                    "apply_to_response",
+                    "scope",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldRule",
+                "description": "A rule as returned by the Shield /default_rules and /rules/search\nendpoints (Shield's RuleResponse).\n\nShield serializes rules via Rule._to_response_model: apply_to_prompt/\napply_to_response flags, unix-millisecond timestamps, and an optional\nnested typed config object. to_engine_rule() converts this into the engine\nRule, deriving rule_data from config the same way the engine does for a\nNewRuleRequest."
+            },
+            "ShieldRuleDetails": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "score": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Score"
+                    },
+                    "message": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Message"
+                    },
+                    "claims": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldHallucinationClaim"
+                        },
+                        "type": "array",
+                        "title": "Claims",
+                        "default": []
+                    },
+                    "pii_entities": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldPIIEntity"
+                        },
+                        "type": "array",
+                        "title": "Pii Entities",
+                        "default": []
+                    },
+                    "keyword_matches": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldKeywordMatch"
+                        },
+                        "type": "array",
+                        "title": "Keyword Matches",
+                        "default": []
+                    },
+                    "regex_matches": {
+                        "items": {
+                            "$ref": "#/components/schemas/ShieldRegexMatch"
+                        },
+                        "type": "array",
+                        "title": "Regex Matches",
+                        "default": []
+                    },
+                    "toxicity_score": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ShieldToxicityScore"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id"
+                ],
+                "title": "ShieldRuleDetails"
+            },
+            "ShieldRuleType": {
+                "type": "string",
+                "enum": [
+                    "KeywordRule",
+                    "ModelHallucinationRule",
+                    "ModelHallucinationRuleV2",
+                    "ModelHallucinationRuleV3",
+                    "ModelSensitiveDataRule",
+                    "PIIDataRule",
+                    "PromptInjectionRule",
+                    "RegexRule",
+                    "ToxicityRule"
+                ],
+                "title": "ShieldRuleType"
+            },
+            "ShieldTask": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "name": {
+                        "type": "string",
+                        "title": "Name"
+                    },
+                    "created_at": {
+                        "type": "integer",
+                        "title": "Created At"
+                    },
+                    "updated_at": {
+                        "type": "integer",
+                        "title": "Updated At"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "name",
+                    "created_at",
+                    "updated_at"
+                ],
+                "title": "ShieldTask",
+                "description": "A task as returned by the Shield /tasks/search endpoint.\n\nShield serializes task timestamps as unix milliseconds\n(see Task._to_response_model / _serialize_datetime), so created_at and\nupdated_at are ints here, not datetimes. to_engine_task() converts them."
+            },
+            "ShieldTaskToRuleLink": {
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "title": "Task Id"
+                    },
+                    "rule_id": {
+                        "type": "string",
+                        "title": "Rule Id"
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "title": "Enabled"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "task_id",
+                    "rule_id",
+                    "enabled"
+                ],
+                "title": "ShieldTaskToRuleLink"
+            },
+            "ShieldToxicityScore": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "toxicity_score": {
+                        "type": "number",
+                        "title": "Toxicity Score"
+                    },
+                    "toxicity_violation_type": {
+                        "$ref": "#/components/schemas/ToxicityViolationType"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "toxicity_score",
+                    "toxicity_violation_type"
+                ],
+                "title": "ShieldToxicityScore"
+            },
             "SpanListResponse": {
                 "properties": {
                     "count": {
@@ -31686,6 +32868,33 @@
                     "rules"
                 ],
                 "title": "TaskResponse"
+            },
+            "TaskToRuleLinkResponse": {
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "title": "Task Id"
+                    },
+                    "rule_id": {
+                        "type": "string",
+                        "title": "Rule Id"
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "title": "Enabled"
+                    },
+                    "rule": {
+                        "$ref": "#/components/schemas/RuleResponse"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "task_id",
+                    "rule_id",
+                    "enabled",
+                    "rule"
+                ],
+                "title": "TaskToRuleLinkResponse"
             },
             "TemplateVariableMapping-Input": {
                 "properties": {

@@ -53,6 +53,16 @@ class Config:
             return False
         return True
 
+    @classmethod
+    def migration_mode(cls) -> bool:
+        migration_mode: str | None = get_env_var(
+            constants.GENAI_ENGINE_MIGRATION_MODE_ENV_VAR,
+            none_on_missing=True,
+        )
+        if not migration_mode or migration_mode.upper() != "ENABLED":
+            return False
+        return True
+
     # Default whitelist used when the env var is unset. Per UP-4461: tenant
     # callers see at most these two models across enabled providers.
     DEFAULT_TENANT_MODEL_WHITELIST: tuple[str, ...] = (

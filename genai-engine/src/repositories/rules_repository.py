@@ -82,10 +82,14 @@ class RuleRepository:
         rules = [Rule._from_database_model(op) for op in results]
         return rules, count
 
-    def create_rule(self, rule: Rule) -> Rule:
+    def create_rule(self, rule: Rule, commit: bool = True) -> Rule:
         created_rule_db = rule._to_database_model()
         self.db_session.add(created_rule_db)
-        self.db_session.commit()
+
+        if commit:
+            self.db_session.commit()
+        else:
+            self.db_session.flush()
 
         return Rule._from_database_model(created_rule_db)
 

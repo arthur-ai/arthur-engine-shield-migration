@@ -2,6 +2,13 @@ The intention of this changelog is to document API changes as they happen to eff
 
 ---
 
+# 07/06/2026
+- **CHANGE** for **URL**: /api/v1/migration/feedback/bulk  endpoint added
+- **CHANGE** for **URL**: /api/v1/migration/inferences/bulk  endpoint added
+- **CHANGE** for **URL**: /api/v1/migration/rules/bulk  endpoint added
+- **CHANGE** for **URL**: /api/v1/migration/task_rule_links/bulk  endpoint added
+- **CHANGE** for **URL**: /api/v1/migration/tasks/bulk  endpoint added
+
 # 06/24/2026
 - **CHANGE** for **URL**: /api/v1/traces/sessions  added the new optional `query` request parameter `session_ids`
 - **CHANGE** for **URL**: /api/v1/traces/sessions  added the new optional `query` request parameter `trace_ids`

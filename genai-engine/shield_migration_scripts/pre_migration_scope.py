@@ -13,8 +13,8 @@ Shield DB connection:
     SHIELD_POSTGRES_USE_SSL         (optional, "true"/"false", default false)
     SHIELD_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
 
-A date window is required: pass either --last-days, or both --from-date and
---to-date.
+A date window is required: pass --last-days, or --from-date (with an optional
+--to-date, which defaults to now).
 
 You may optionally pass --output-dir/-o to also write the results to a file
 in that directory.
@@ -24,7 +24,7 @@ COUNT(*) queries. This is a cheap alternative to full scans, but numbers
 are approximate and the per-task breakdown is skipped.
 
 Usage:
-    python pre_migration_scope.py --from-date 2020-01-01 --to-date 2021-01-01
+    python pre_migration_scope.py --from-date 2025-01-01 --to-date 2026-01-01
     python pre_migration_scope.py --last-days 180
     python pre_migration_scope.py --last-days 180 --output-dir ./reports
     python pre_migration_scope.py --last-days 180 --estimate
@@ -35,8 +35,11 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+load_dotenv()
 
 
 def get_shield_engine() -> Engine:
@@ -246,7 +249,7 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
     print(report)
     if output_dir is not None:
         from_label = from_dt.date().isoformat()
-        to_label = to_dt.date().isoformat()
+        to_label = to_dt.date().isoformat() if to_dt else "now"
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(
             output_dir,
@@ -289,12 +292,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Require an explicit window:
-    # either --last-days, or both --from-date and --to-date.
-    if args.last_days is None and not (args.from_date and args.to_date):
+    # Require a window start:
+    # --last-days, or --from-date (--to-date optional, defaults to now).
+    if args.last_days is None and args.from_date is None:
         parser.error(
-            "specify a date window: either --last-days N, "
-            "or both --from-date and --to-date",
+            "specify a date window: --last-days N, or --from-date "
+            "(with optional --to-date)",
         )
 
     from_dt, to_dt = parse_window(args)

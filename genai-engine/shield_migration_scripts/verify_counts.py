@@ -1,0 +1,268 @@
+# verify_counts.py
+"""
+Verifies a Shield → Engine migration by comparing row counts between the two
+PostgreSQL databases directly (no Shield API), over the same date window that
+was migrated.
+
+For each section it counts the rows in Shield (source) and in Engine (target)
+and reports a ✓ when they match, ✗ when they don't. A final section runs an
+Engine-side sanity check that no org-scoped rows were inserted without an org_id.
+
+Shield DB connection (source):
+    SHIELD_POSTGRES_USER
+    SHIELD_POSTGRES_PASSWORD
+    SHIELD_POSTGRES_URL
+    SHIELD_POSTGRES_PORT
+    SHIELD_POSTGRES_DB
+    SHIELD_POSTGRES_USE_SSL         (optional, "true"/"false", default false)
+    SHIELD_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
+
+Engine DB connection (target): same variables with an ENGINE_ prefix
+    ENGINE_POSTGRES_USER
+    ENGINE_POSTGRES_PASSWORD
+    ENGINE_POSTGRES_URL
+    ENGINE_POSTGRES_PORT
+    ENGINE_POSTGRES_DB
+    ENGINE_POSTGRES_USE_SSL         (optional, "true"/"false", default false)
+    ENGINE_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
+
+The Engine org the data was migrated into:
+    ENGINE_ORG_ID
+
+A date window is required: pass --last-days, or --from-date (with an optional
+--to-date, which defaults to now). Use the same window the migration ran with.
+
+Usage:
+    python verify_counts.py --from-date 2025-01-01 --to-date 2026-01-01
+    python verify_counts.py --last-days 180
+    python verify_counts.py --from-date 2026-01-01
+"""
+
+import argparse
+import os
+import urllib.parse
+from datetime import datetime, timedelta, timezone
+
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+
+load_dotenv()
+
+
+def get_engine(prefix: str) -> Engine:
+    """Build a SQLAlchemy engine from <prefix>_POSTGRES_* env vars."""
+    user = os.environ[f"{prefix}_POSTGRES_USER"]
+    password = os.environ[f"{prefix}_POSTGRES_PASSWORD"]
+    host = os.environ[f"{prefix}_POSTGRES_URL"]
+    port = os.environ[f"{prefix}_POSTGRES_PORT"]
+    db_name = os.environ[f"{prefix}_POSTGRES_DB"]
+
+    params = {}
+    if os.getenv(f"{prefix}_POSTGRES_USE_SSL", "false").lower() == "true":
+        params["sslmode"] = "verify-full"
+        ssl_root_cert = os.getenv(f"{prefix}_POSTGRES_SSL_ROOT_CERT")
+        if ssl_root_cert:
+            params["sslrootcert"] = ssl_root_cert
+
+    query = urllib.parse.urlencode(params)
+    conn_str = (
+        f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db_name}?" + query
+    )
+    return create_engine(conn_str, pool_pre_ping=True)
+
+
+def parse_window(args):
+    now = datetime.now(timezone.utc)
+    if args.last_days:
+        return now - timedelta(days=args.last_days), now
+    from_dt = datetime.fromisoformat(args.from_date) if args.from_date else None
+    to_dt = datetime.fromisoformat(args.to_date) if args.to_date else None
+    return from_dt, to_dt
+
+
+def fmt(n):
+    return f"{n:,}"
+
+
+def window_clause(from_dt, to_dt, column="created_at"):
+    """Build a WHERE fragment + params for an optional created_at window."""
+    clauses, params = [], {}
+    if from_dt:
+        clauses.append(f"{column} >= :from_dt")
+        params["from_dt"] = from_dt
+    if to_dt:
+        clauses.append(f"{column} < :to_dt")
+        params["to_dt"] = to_dt
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def count(conn, table, where="", params=None):
+    return conn.execute(
+        text(f"SELECT COUNT(*) FROM {table} {where}"),
+        params or {},
+    ).scalar_one()
+
+
+def compare(label, shield_n, engine_n):
+    status = "✓" if shield_n == engine_n else "✗ MISMATCH"
+    return f"  {status:<10} {label:<28} shield={fmt(shield_n)}  engine={fmt(engine_n)}"
+
+
+def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
+    lines = []
+
+    window_label = "all time"
+    if from_dt:
+        window_label = f"from {from_dt.date()}"
+    if to_dt:
+        window_label += f" to {to_dt.date()}"
+
+    lines.append(f"\n{'='*70}")
+    lines.append(f"  Shield → Engine Migration Verification")
+    lines.append(f"  Window: {window_label}")
+    lines.append(f"  Org:    {org_id}")
+    lines.append(f"{'='*70}\n")
+
+    inf_where, inf_params = window_clause(from_dt, to_dt)
+    # Engine's org-scoped tables filter by created_at window AND org_id.
+    org_where = inf_where + (" AND " if inf_where else "WHERE ") + "org_id = :org_id"
+    org_params = {**inf_params, "org_id": org_id}
+
+    all_match = True
+
+    parent_where, parent_params = window_clause(from_dt, to_dt, column="i.created_at")
+    inference_tables = (
+        ("inferences", "inferences i"),
+        (
+            "inference_prompts",
+            "inference_prompts c JOIN inferences i ON c.inference_id = i.id",
+        ),
+        (
+            "inference_responses",
+            "inference_responses c JOIN inferences i ON c.inference_id = i.id",
+        ),
+        (
+            "inference_prompt_contents",
+            "inference_prompt_contents c "
+            "JOIN inference_prompts p ON c.inference_prompt_id = p.id "
+            "JOIN inferences i ON p.inference_id = i.id",
+        ),
+        (
+            "inference_response_contents",
+            "inference_response_contents c "
+            "JOIN inference_responses r ON c.inference_response_id = r.id "
+            "JOIN inferences i ON r.inference_id = i.id",
+        ),
+    )
+
+    with shield.connect() as sc, engine.connect() as ec:
+        # ── Inferences ──────────────────────────────────────────────────────
+        lines.append("Inferences")
+        for label, from_sql in inference_tables:
+            s = count(sc, from_sql, parent_where, parent_params)
+            e = count(ec, from_sql, parent_where, parent_params)
+            all_match = all_match and s == e
+            lines.append(compare(label, s, e))
+        lines.append("")
+
+        # ── Validation results ──────────────────────────────────────────────
+        # Shield counts by created_at; Engine counts by created_at + org_id.
+        lines.append("Validation (rule) results")
+        for table in ("prompt_rule_results", "response_rule_results"):
+            s = count(sc, table, inf_where, inf_params)
+            e = count(ec, table, org_where, org_params)
+            all_match = all_match and s == e
+            lines.append(compare(table, s, e))
+        lines.append("")
+
+        # ── Feedback ────────────────────────────────────────────────────────
+        lines.append("Feedback")
+        fb_clauses = []
+        for column in ("f.created_at", "i.created_at"):
+            if from_dt:
+                fb_clauses.append(f"{column} >= :from_dt")
+            if to_dt:
+                fb_clauses.append(f"{column} < :to_dt")
+        fb_where = ("WHERE " + " AND ".join(fb_clauses)) if fb_clauses else ""
+        s = count(
+            sc,
+            "inference_feedback f JOIN inferences i ON f.inference_id = i.id",
+            fb_where,
+            inf_params,
+        )
+        e = count(ec, "inference_feedback", org_where, org_params)
+        all_match = all_match and s == e
+        lines.append(compare("inference_feedback", s, e))
+        lines.append("")
+
+        # ── Engine org_id sanity check ──────────────────────────────────────
+        # No org-scoped row should have been inserted without an org_id.
+        lines.append(
+            "Rows for org-scoped resources missing an org_id (each should be 0)",
+        )
+        for table in (
+            "prompt_rule_results",
+            "response_rule_results",
+            "rule_result_details",
+            "hallucination_claims",
+            "pii_entities",
+            "keyword_matches",
+            "regex_matches",
+            "toxicity_scores",
+            "inference_feedback",
+        ):
+            null_n = count(ec, table, "WHERE org_id IS NULL")
+            status = "✓" if null_n == 0 else "✗"
+            all_match = all_match and null_n == 0
+            lines.append(f"  {status:<10} {table:<28} missing org ids: {fmt(null_n)}")
+        lines.append("")
+
+    lines.append("=" * 70)
+    lines.append("  RESULT: " + ("ALL MATCH ✓" if all_match else "MISMATCHES FOUND ✗"))
+    lines.append("=" * 70)
+
+    print("\n".join(lines))
+    return all_match
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--from-date",
+        default=None,
+        help="Start date (inclusive), e.g. 2020-01-01",
+    )
+    parser.add_argument(
+        "--to-date",
+        default=None,
+        help="End date (exclusive), e.g. 2021-01-01",
+    )
+    parser.add_argument(
+        "--last-days",
+        type=int,
+        default=None,
+        help="Shorthand: verify the last N days",
+    )
+    args = parser.parse_args()
+
+    # Require a window start:
+    # --last-days, or --from-date (--to-date optional, defaults to now).
+    if args.last_days is None and args.from_date is None:
+        parser.error(
+            "specify a date window: --last-days N, or --from-date "
+            "(with optional --to-date)",
+        )
+
+    org_id = os.environ["ENGINE_ORG_ID"]
+    from_dt, to_dt = parse_window(args)
+    shield = get_engine("SHIELD")
+    engine = get_engine("ENGINE")
+
+    ok = verify(shield, engine, from_dt, to_dt, org_id)
+    raise SystemExit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()
