@@ -5,8 +5,10 @@ PostgreSQL databases directly (no Shield API), over the same date window that
 was migrated.
 
 For each section it counts the rows in Shield (source) and in Engine (target)
-and reports a ✓ when they match, ✗ when they don't. A final section runs an
-Engine-side sanity check that no org-scoped rows were inserted without an org_id.
+and reports a ✓ when they match, ✗ when they don't. Shield inferences that
+reference an archived task are excluded from the Shield-side counts. A final 
+section runs an Engine-side sanity check that no org-scoped rows were inserted 
+without an org_id.
 
 Shield DB connection (source):
     SHIELD_POSTGRES_USER
@@ -98,6 +100,11 @@ def window_clause(from_dt, to_dt, column="created_at"):
     return where, params
 
 
+def and_clause(where, condition):
+    """Append a condition to an existing WHERE fragment (or start one)."""
+    return where + (" AND " if where else "WHERE ") + condition
+
+
 def count(conn, table, where="", params=None):
     return conn.execute(
         text(f"SELECT COUNT(*) FROM {table} {where}"),
@@ -157,21 +164,66 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
         ),
     )
 
+    # Exclude Shield inferences referencing archived tasks from the
+    # Shield-side counts and reported separately.
+    archived_join = "LEFT JOIN tasks t ON i.task_id = t.id"
+    kept = "(i.task_id IS NULL OR COALESCE(t.archived, TRUE) = FALSE)"
+    excluded = "(i.task_id IS NOT NULL AND COALESCE(t.archived, TRUE) = TRUE)"
+
     with shield.connect() as sc, engine.connect() as ec:
         # ── Inferences ──────────────────────────────────────────────────────
         lines.append("Inferences")
         for label, from_sql in inference_tables:
-            s = count(sc, from_sql, parent_where, parent_params)
+            s = count(
+                sc,
+                f"{from_sql} {archived_join}",
+                and_clause(parent_where, kept),
+                parent_params,
+            )
             e = count(ec, from_sql, parent_where, parent_params)
             all_match = all_match and s == e
             lines.append(compare(label, s, e))
+        excluded_n = count(
+            sc,
+            f"inferences i {archived_join}",
+            and_clause(parent_where, excluded),
+            parent_params,
+        )
+        archived_tasks_n = count(sc, "tasks", "WHERE archived")
+        lines.append(
+            f"\nShield tasks archived (not migrated): {fmt(archived_tasks_n)}",
+        )
+        lines.append(
+            f"Shield inferences referencing archived tasks"
+            f" (not migrated, excluded from the counts above): {fmt(excluded_n)}",
+        )
         lines.append("")
 
         # ── Validation results ──────────────────────────────────────────────
         # Shield counts by created_at; Engine counts by created_at + org_id.
         lines.append("Validation (rule) results")
-        for table in ("prompt_rule_results", "response_rule_results"):
-            s = count(sc, table, inf_where, inf_params)
+        rr_where, rr_params = window_clause(from_dt, to_dt, column="rr.created_at")
+        rule_result_tables = (
+            (
+                "prompt_rule_results",
+                "prompt_rule_results rr "
+                "JOIN inference_prompts p ON rr.inference_prompt_id = p.id "
+                "JOIN inferences i ON p.inference_id = i.id",
+            ),
+            (
+                "response_rule_results",
+                "response_rule_results rr "
+                "JOIN inference_responses r ON rr.inference_response_id = r.id "
+                "JOIN inferences i ON r.inference_id = i.id",
+            ),
+        )
+        for table, shield_from_sql in rule_result_tables:
+            s = count(
+                sc,
+                f"{shield_from_sql} {archived_join}",
+                and_clause(rr_where, kept),
+                rr_params,
+            )
             e = count(ec, table, org_where, org_params)
             all_match = all_match and s == e
             lines.append(compare(table, s, e))
@@ -188,8 +240,9 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
         fb_where = ("WHERE " + " AND ".join(fb_clauses)) if fb_clauses else ""
         s = count(
             sc,
-            "inference_feedback f JOIN inferences i ON f.inference_id = i.id",
-            fb_where,
+            "inference_feedback f "
+            f"JOIN inferences i ON f.inference_id = i.id {archived_join}",
+            and_clause(fb_where, kept),
             inf_params,
         )
         e = count(ec, "inference_feedback", org_where, org_params)

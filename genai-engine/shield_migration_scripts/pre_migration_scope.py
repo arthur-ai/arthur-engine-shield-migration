@@ -102,6 +102,11 @@ def estimate_count(conn, sql, params):
     return int(plan[0]["Plan"]["Plan Rows"])
 
 
+def and_clause(where, condition):
+    """Append a condition to an existing WHERE fragment (or start one)."""
+    return where + (" AND " if where else "WHERE ") + condition
+
+
 def windowed_count(conn, table, where, params, estimate):
     """
     Returns either an exact count for the table, or the planner
@@ -141,7 +146,12 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
 
     with engine.connect() as conn:
         # ── Config ──────────────────────────────────────────────────────────
-        task_count = conn.execute(text("SELECT COUNT(*) FROM tasks")).scalar_one()
+        task_count = conn.execute(
+            text("SELECT COUNT(*) FROM tasks WHERE NOT archived"),
+        ).scalar_one()
+        archived_task_count = conn.execute(
+            text("SELECT COUNT(*) FROM tasks WHERE archived"),
+        ).scalar_one()
         rule_count = conn.execute(
             text("SELECT COUNT(*) FROM rules WHERE scope = 'task'"),
         ).scalar_one()
@@ -152,6 +162,9 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
 
         lines.append("Config (always migrated in full, date window does not apply)")
         lines.append(f"  Tasks                          {fmt(task_count)}")
+        lines.append(
+            f"  Archived tasks (not migrated)  {fmt(archived_task_count)}",
+        )
         lines.append(f"  Task-scoped rules              {fmt(rule_count)}")
         lines.append(f"  Default rules                  {fmt(n_default)}")
         lines.append(f"  Task–rule links                {fmt(n_links)}")
@@ -159,7 +172,41 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
 
         # ── Inferences ──────────────────────────────────────────────────────
         inf_where, inf_params = window_clause(from_dt, to_dt)
-        total_infs = windowed_count(conn, "inferences", inf_where, inf_params, estimate)
+
+        # Exclude inferences referencing archived tasks from being migrated
+        archived_join = "LEFT JOIN tasks t ON i.task_id = t.id"
+        kept = "(i.task_id IS NULL OR COALESCE(t.archived, TRUE) = FALSE)"
+        excluded = "(i.task_id IS NOT NULL AND COALESCE(t.archived, TRUE) = TRUE)"
+
+        excluded_infs = 0
+        if estimate:
+            total_infs = windowed_count(
+                conn,
+                "inferences",
+                inf_where,
+                inf_params,
+                estimate,
+            )
+        else:
+            parent_where, parent_params = window_clause(
+                from_dt,
+                to_dt,
+                column="i.created_at",
+            )
+            total_infs = windowed_count(
+                conn,
+                f"inferences i {archived_join}",
+                and_clause(parent_where, kept),
+                parent_params,
+                estimate,
+            )
+            excluded_infs = windowed_count(
+                conn,
+                f"inferences i {archived_join}",
+                and_clause(parent_where, excluded),
+                parent_params,
+                estimate,
+            )
 
         # The per-task GROUP BY needs a full scan the planner can't estimate
         # per-group, so skip if in estimate mode.
@@ -174,7 +221,7 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
                            COUNT(*) AS n
                     FROM inferences i
                     LEFT JOIN tasks t ON t.id = i.task_id
-                    {inf_join_where}
+                    {and_clause(inf_join_where, kept)}
                     GROUP BY i.task_id, t.name
                     """),
                 inf_params,
@@ -192,25 +239,50 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
             lines.append(
                 f"  Tasks with data                {fmt(tasks_with_data)} / {fmt(task_count)}",
             )
+            lines.append(
+                f"  Referencing archived tasks    "
+                f" {fmt(excluded_infs)} (will not be migrated, excluded above)",
+            )
 
         lines.append("")
 
         # ── Validation results ──────────────────────────────────────────────
-        prr_where, prr_params = window_clause(from_dt, to_dt)
-        n_prompt_rr = windowed_count(
-            conn,
-            "prompt_rule_results",
-            prr_where,
-            prr_params,
-            estimate,
-        )
-        n_response_rr = windowed_count(
-            conn,
-            "response_rule_results",
-            prr_where,
-            prr_params,
-            estimate,
-        )
+        if estimate:
+            prr_where, prr_params = window_clause(from_dt, to_dt)
+            n_prompt_rr = windowed_count(
+                conn,
+                "prompt_rule_results",
+                prr_where,
+                prr_params,
+                estimate,
+            )
+            n_response_rr = windowed_count(
+                conn,
+                "response_rule_results",
+                prr_where,
+                prr_params,
+                estimate,
+            )
+        else:
+            rr_where, rr_params = window_clause(from_dt, to_dt, column="rr.created_at")
+            n_prompt_rr = windowed_count(
+                conn,
+                "prompt_rule_results rr "
+                "JOIN inference_prompts p ON rr.inference_prompt_id = p.id "
+                f"JOIN inferences i ON p.inference_id = i.id {archived_join}",
+                and_clause(rr_where, kept),
+                rr_params,
+                estimate,
+            )
+            n_response_rr = windowed_count(
+                conn,
+                "response_rule_results rr "
+                "JOIN inference_responses r ON rr.inference_response_id = r.id "
+                f"JOIN inferences i ON r.inference_id = i.id {archived_join}",
+                and_clause(rr_where, kept),
+                rr_params,
+                estimate,
+            )
 
         lines.append("Validation (rule) results")
         lines.append(
@@ -225,14 +297,25 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
         lines.append("")
 
         # ── Feedback ────────────────────────────────────────────────────────
-        fb_where, fb_params = window_clause(from_dt, to_dt)
-        n_fb = windowed_count(
-            conn,
-            "inference_feedback",
-            fb_where,
-            fb_params,
-            estimate,
-        )
+        if estimate:
+            fb_where, fb_params = window_clause(from_dt, to_dt)
+            n_fb = windowed_count(
+                conn,
+                "inference_feedback",
+                fb_where,
+                fb_params,
+                estimate,
+            )
+        else:
+            fb_where, fb_params = window_clause(from_dt, to_dt, column="f.created_at")
+            n_fb = windowed_count(
+                conn,
+                "inference_feedback f "
+                f"JOIN inferences i ON f.inference_id = i.id {archived_join}",
+                and_clause(fb_where, kept),
+                fb_params,
+                estimate,
+            )
         lines.append("Feedback")
         lines.append(f"  Total Feedback                 {format_count(n_fb, estimate)}")
         lines.append("")

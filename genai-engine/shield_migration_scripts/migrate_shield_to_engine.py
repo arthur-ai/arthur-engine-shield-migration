@@ -35,8 +35,8 @@ ENGINE_ORG_ID = os.getenv("ENGINE_ORG_ID")
 CHECKPOINT_DIR = os.getenv("MIGRATION_CHECKPOINT_DIR", default="migration_states")
 
 SHIELD_PAGE_SIZE = int(
-    os.getenv("SHIELD_PAGE_SIZE", default=5000),
-)  # max page size supported by Shield API
+    os.getenv("SHIELD_PAGE_SIZE", default=4999),
+)  # Shield requires page_size > 0 and < 5000
 ENGINE_BATCH_SIZE = int(
     os.getenv("ENGINE_BATCH_SIZE", default=500),
 )  # inferences per POST to the Engine
@@ -63,10 +63,11 @@ def shield_get(path, params=None):
     return r.json()
 
 
-def shield_post(path, body):
+def shield_post(path, body, params=None):
     r = requests.post(
         f"{SHIELD_BASE_URL}/{path}",
         json=body,
+        params=params or {},
         headers={
             "Authorization": f"Bearer {SHIELD_API_KEY}",
         },
@@ -77,10 +78,18 @@ def shield_post(path, body):
 
 
 def shield_paginate(path, body, count_key, items_key):
-    """Fetch all pages from a Shield POST search endpoint. Pages start at 0."""
+    """Fetch all pages from a Shield POST search endpoint. Pages start at 0.
+
+    page/page_size are query params — Shield silently ignores them if sent in
+    the POST body and returns the same default-sized first page every time.
+    """
     page, all_items = 0, []
     while True:
-        resp = shield_post(path, {**body, "page_size": SHIELD_PAGE_SIZE, "page": page})
+        resp = shield_post(
+            path,
+            body,
+            params={"page_size": SHIELD_PAGE_SIZE, "page": page},
+        )
         total = resp.get(count_key, 0)
         batch = resp.get(items_key, [])
         all_items.extend(batch)

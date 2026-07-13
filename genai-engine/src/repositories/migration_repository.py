@@ -70,6 +70,8 @@ class MigrationRepository:
             if shield_task.id in existing_ids:
                 logger.info("Skipping task %s, already exists", shield_task.id)
                 continue
+
+            existing_ids.add(shield_task.id)
             task = self.task_repository.create_task(
                 task=shield_task.to_engine_task(org_id),
                 with_default_rules=False,
@@ -96,6 +98,8 @@ class MigrationRepository:
             if shield_rule.id in existing_ids:
                 logger.info("Skipping rule %s, already exists", shield_rule.id)
                 continue
+
+            existing_ids.add(shield_rule.id)
             rule = self.rule_repository.create_rule(
                 rule=shield_rule.to_engine_rule(),
                 commit=False,
@@ -130,6 +134,8 @@ class MigrationRepository:
                     shield_link.rule_id,
                 )
                 continue
+
+            existing_pairs.add((shield_link.task_id, shield_link.rule_id))
             db_link = DatabaseTaskToRules(
                 task_id=shield_link.task_id,
                 rule_id=shield_link.rule_id,
@@ -153,6 +159,19 @@ class MigrationRepository:
             )
         }
 
+        existing_task_ids = {
+            row[0]
+            for row in self.db_session.query(DatabaseTask.id).filter(
+                DatabaseTask.id.in_(
+                    {
+                        inf.task_id
+                        for inf in request.inferences
+                        if inf.task_id is not None
+                    },
+                ),
+            )
+        }
+
         inserted = 0
         skipped = 0
         for shield_inference in request.inferences:
@@ -163,6 +182,22 @@ class MigrationRepository:
                 )
                 skipped += 1
                 continue
+
+            # Archived Shield tasks are not migrated (Shield's task search
+            # cannot return them), so their inferences are skipped too.
+            if (
+                shield_inference.task_id is not None
+                and shield_inference.task_id not in existing_task_ids
+            ):
+                logger.warning(
+                    "Skipping inference %s, task %s was not migrated",
+                    shield_inference.id,
+                    shield_inference.task_id,
+                )
+                skipped += 1
+                continue
+
+            existing_ids.add(shield_inference.id)
 
             self.db_session.add(shield_inference.to_engine_db_model(org_id))
             inserted += 1
@@ -207,6 +242,8 @@ class MigrationRepository:
                 )
                 skipped += 1
                 continue
+
+            existing_ids.add(shield_feedback.id)
 
             self.db_session.add(shield_feedback.to_engine_db_model(org_id))
             inserted += 1

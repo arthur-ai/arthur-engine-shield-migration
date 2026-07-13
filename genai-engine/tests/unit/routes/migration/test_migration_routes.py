@@ -207,6 +207,29 @@ def test_bulk_migrate_rules_creates_rule(client: GenaiEngineTestClientBase):
 
 
 @pytest.mark.unit_tests
+def test_bulk_migrate_rules_dedupes_within_batch(client: GenaiEngineTestClientBase):
+    """The same rule ID twice in one request inserts once, not a 500."""
+    rule_id = str(uuid.uuid4())
+    rule = {
+        "id": rule_id,
+        "name": "dupe-rule",
+        "type": "PIIDataRule",
+        "apply_to_prompt": True,
+        "apply_to_response": True,
+        "scope": "task",
+        "created_at": MIGRATED_AT_MS,
+        "updated_at": MIGRATED_AT_MS,
+        "config": None,
+    }
+    status, body = client.bulk_migrate_rules(rules=[rule, dict(rule)])
+    assert status == 200
+    assert len(body.rules) == 1
+    assert body.rules[0].id == rule_id
+
+    delete_rows(DatabaseRule, rule_id)
+
+
+@pytest.mark.unit_tests
 def test_bulk_migrate_inferences_inserts_and_skips(
     client: GenaiEngineTestClientBase,
     migration_org: str,
