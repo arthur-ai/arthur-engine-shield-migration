@@ -15,7 +15,7 @@ There is also **`delete_migrated_resources.py`** for rolling back a migration. I
 
 > **Note:** Archived tasks and inferences/feedback referencing archived tasks are
 > excluded from the migration. When running the pre_migration_scope.py in exact mode, the
-> number of tasks and inferences not migrated will be reported. And, similarly, in the 
+> number of tasks and inferences not migrated will be reported. And, similarly, in the
 > verify_counts.py script, the number that weren't migrated will be reported.
 
 Shared dependencies:

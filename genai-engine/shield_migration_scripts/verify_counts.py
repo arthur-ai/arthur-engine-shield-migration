@@ -6,8 +6,8 @@ was migrated.
 
 For each section it counts the rows in Shield (source) and in Engine (target)
 and reports a ✓ when they match, ✗ when they don't. Shield inferences that
-reference an archived task are excluded from the Shield-side counts. A final 
-section runs an Engine-side sanity check that no org-scoped rows were inserted 
+reference an archived task are excluded from the Shield-side counts. A final
+section runs an Engine-side sanity check that no org-scoped rows were inserted
 without an org_id.
 
 Shield DB connection (source):
