@@ -267,6 +267,63 @@ def test_bulk_migrate_inferences_inserts_and_skips(
 
 
 @pytest.mark.unit_tests
+def test_bulk_migrate_inferences_skips_unmigrated_task(
+    client: GenaiEngineTestClientBase,
+    migration_org: str,
+):
+    """An inference referencing a task that was never migrated is skipped,
+    not a 500 (archived Shield tasks are not migrated)."""
+    inference = {
+        "id": str(uuid.uuid4()),
+        "result": "Pass",
+        "created_at": MIGRATED_AT_ISO,
+        "updated_at": MIGRATED_AT_ISO,
+        "task_id": str(uuid.uuid4()),
+        "conversation_id": None,
+        "user_id": None,
+        "inference_prompt": None,
+        "inference_response": None,
+        "inference_feedback": [],
+    }
+    status, body = client.bulk_migrate_inferences(
+        inferences=[inference],
+        org_id=migration_org,
+    )
+    assert status == 200
+    assert body.inserted == 0
+    assert body.skipped == 1
+
+
+@pytest.mark.unit_tests
+def test_bulk_migrate_inferences_dedupes_within_batch(
+    client: GenaiEngineTestClientBase,
+    migration_org: str,
+):
+    """The same inference ID twice in one request inserts once, not a 500."""
+    inference = {
+        "id": str(uuid.uuid4()),
+        "result": "Pass",
+        "created_at": MIGRATED_AT_ISO,
+        "updated_at": MIGRATED_AT_ISO,
+        "task_id": None,
+        "conversation_id": None,
+        "user_id": None,
+        "inference_prompt": None,
+        "inference_response": None,
+        "inference_feedback": [],
+    }
+    status, body = client.bulk_migrate_inferences(
+        inferences=[inference, dict(inference)],
+        org_id=migration_org,
+    )
+    assert status == 200
+    assert body.inserted == 1
+    assert body.skipped == 1
+
+    delete_rows(DatabaseInference, inference["id"])
+
+
+@pytest.mark.unit_tests
 def test_bulk_migrate_rules_preserves_archived_flag(
     client: GenaiEngineTestClientBase,
 ):
