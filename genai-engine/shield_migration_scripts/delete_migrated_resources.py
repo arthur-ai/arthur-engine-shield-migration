@@ -59,9 +59,15 @@ def load_state(save_file: str) -> dict:
 
 
 def delete_task_resources(task_id: str) -> None:
-    for label, path_template in DELETE_STEPS:
+    for _, path_template in DELETE_STEPS:
         engine_delete(path_template.format(task_id=task_id))
-        print(f"    deleted {label}")
+
+
+def print_progress(label: str, done: int, total: int) -> None:
+    # Print roughly every 10% (and on completion), not on every item.
+    step = max(1, total // 10)
+    if done % step == 0 or done == total:
+        print(f"  {label}: {done}/{total} ({done * 100 // total}%)", flush=True)
 
 
 def main():
@@ -101,14 +107,13 @@ def main():
         return
 
     print("\nDeleting resources...")
-    for task_id in task_ids:
-        print(f"  Task {task_id}")
+    for i, task_id in enumerate(task_ids, start=1):
         delete_task_resources(task_id)
+        print_progress("Tasks", i, len(task_ids))
 
-    if taskless_inference_ids:
-        print(f"  Deleting {len(taskless_inference_ids)} task-less inference(s)")
-        for inference_id in taskless_inference_ids:
-            engine_delete(f"/api/v1/migration/inferences/{inference_id}")
+    for i, inference_id in enumerate(taskless_inference_ids, start=1):
+        engine_delete(f"/api/v1/migration/inferences/{inference_id}")
+        print_progress("Task-less inferences", i, len(taskless_inference_ids))
 
     print(
         f"\nDone. Deleted resources for {len(task_ids)} task(s) "
