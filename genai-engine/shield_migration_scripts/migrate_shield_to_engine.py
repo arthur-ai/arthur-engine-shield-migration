@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -43,37 +45,66 @@ ENGINE_BATCH_SIZE = int(
 MIGRATION_TIMEOUT = int(
     os.getenv("MIGRATION_TIMEOUT", default=30),
 )  # seconds for all HTTP calls
+MAX_WORKERS = int(os.getenv("MIGRATION_MAX_WORKERS", default=10))
+MAX_ATTEMPTS = 6
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 ALL_PHASES = ["config", "inferences", "feedback"]
+
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+
+def request_with_retry(method, url, **kwargs):
+    last_error = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            response = requests.request(
+                method,
+                url,
+                timeout=MIGRATION_TIMEOUT,
+                **kwargs,
+            )
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                response.raise_for_status()
+                return response
+            last_error = f"{response.status_code} {response.text}"
+        except requests.HTTPError:
+            raise
+        except requests.RequestException as e:
+            last_error = str(e)
+        if attempt < MAX_ATTEMPTS - 1:
+            time.sleep(min(2**attempt, 30))
+    raise Exception(
+        f"{method} {url} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+    )
+
 
 # ── Shield API helpers ────────────────────────────────────────────────────────
 
 
 def shield_get(path, params=None):
     """GET request to Shield. Params dict may include lists for repeated keys."""
-    r = requests.get(
+    r = request_with_retry(
+        "GET",
         f"{SHIELD_BASE_URL}/{path}",
         headers={
             "Authorization": f"Bearer {SHIELD_API_KEY}",
         },
         params=params or {},
-        timeout=MIGRATION_TIMEOUT,
     )
-    r.raise_for_status()
     return r.json()
 
 
 def shield_post(path, body, params=None):
-    r = requests.post(
+    r = request_with_retry(
+        "POST",
         f"{SHIELD_BASE_URL}/{path}",
         json=body,
         params=params or {},
         headers={
             "Authorization": f"Bearer {SHIELD_API_KEY}",
         },
-        timeout=MIGRATION_TIMEOUT,
     )
-    r.raise_for_status()
     return r.json()
 
 
@@ -103,16 +134,47 @@ def shield_paginate(path, body, count_key, items_key):
 
 
 def engine_post(path, body):
-    r = requests.post(
+    r = request_with_retry(
+        "POST",
         f"{ENGINE_BASE_URL}{path}",
         json=body,
         headers={
             "Authorization": f"Bearer {ENGINE_API_KEY}",
         },
-        timeout=MIGRATION_TIMEOUT,
     )
-    r.raise_for_status()
     return r.json()
+
+
+def engine_post_batches(path, items_key, items):
+    """POST items to an Engine bulk endpoint in parallel ENGINE_BATCH_SIZE chunks.
+
+    Returns (inserted, skipped). On failure the page checkpoint is never
+    advanced, so a resume refetches the page and skip-existing dedupes any
+    chunks that already committed.
+    """
+    chunks = [
+        items[i : i + ENGINE_BATCH_SIZE]
+        for i in range(0, len(items), ENGINE_BATCH_SIZE)
+    ]
+    inserted = skipped = 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [
+            executor.submit(
+                engine_post,
+                path,
+                {items_key: chunk, "org_id": ENGINE_ORG_ID},
+            )
+            for chunk in chunks
+        ]
+        for future in as_completed(futures):
+            try:
+                resp = future.result()
+            except Exception:
+                executor.shutdown(cancel_futures=True)
+                raise
+            inserted += resp.get("inserted", 0)
+            skipped += resp.get("skipped", 0)
+    return inserted, skipped
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -396,16 +458,13 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
         if not batch:
             break
 
-        for i in range(0, len(batch), ENGINE_BATCH_SIZE):
-            post_resp = engine_post(
-                "/api/v1/migration/inferences/bulk",
-                {
-                    "inferences": batch[i : i + ENGINE_BATCH_SIZE],
-                    "org_id": ENGINE_ORG_ID,
-                },
-            )
-            inserted += post_resp.get("inserted", 0)
-            skipped += post_resp.get("skipped", 0)
+        page_inserted, page_skipped = engine_post_batches(
+            "/api/v1/migration/inferences/bulk",
+            "inferences",
+            batch,
+        )
+        inserted += page_inserted
+        skipped += page_skipped
 
         # Task-less inferences aren't reachable by task-scoped cleanup, so record
         # their IDs for the delete script to remove them directly.
@@ -469,13 +528,13 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt):
         if not batch:
             break
 
-        for i in range(0, len(batch), ENGINE_BATCH_SIZE):
-            post_resp = engine_post(
-                "/api/v1/migration/feedback/bulk",
-                {"feedback": batch[i : i + ENGINE_BATCH_SIZE], "org_id": ENGINE_ORG_ID},
-            )
-            inserted += post_resp.get("inserted", 0)
-            skipped += post_resp.get("skipped", 0)
+        page_inserted, page_skipped = engine_post_batches(
+            "/api/v1/migration/feedback/bulk",
+            "feedback",
+            batch,
+        )
+        inserted += page_inserted
+        skipped += page_skipped
 
         processed += len(batch)
         page += 1
