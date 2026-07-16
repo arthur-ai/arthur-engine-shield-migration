@@ -15,6 +15,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from dotenv import load_dotenv
@@ -28,26 +30,50 @@ MIGRATION_TIMEOUT = int(
     os.getenv("MIGRATION_TIMEOUT", default=30),
 )  # seconds for all HTTP calls
 
-# Resource endpoints for a single task, in FK-safe deletion order: each child is
-# removed before the parent it points at, ending with the task row itself.
-DELETE_STEPS = [
+MAX_WORKERS = int(os.getenv("MIGRATION_MAX_WORKERS", default=10))
+MAX_ATTEMPTS = 6
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Per-task child resources, in FK-safe deletion order. Safe to run concurrently
+# across tasks since none of these rows are shared between tasks.
+TASK_RESOURCE_STEPS = [
     ("rule results", "/api/v1/migration/tasks/{task_id}/rule_results"),
     ("feedback", "/api/v1/migration/tasks/{task_id}/feedback"),
     ("inferences", "/api/v1/migration/tasks/{task_id}/inferences"),
+]
+
+# The rules endpoint deletes rules left unlinked from every task, which races
+# when tasks sharing a rule are deleted concurrently — run these sequentially.
+TASK_FINAL_STEPS = [
     ("rules", "/api/v1/migration/tasks/{task_id}/rules"),
     ("task", "/api/v1/migration/tasks/{task_id}"),
 ]
 
 
 def engine_delete(path: str) -> None:
-    r = requests.delete(
-        f"{ENGINE_BASE_URL}{path}",
-        headers={
-            "Authorization": f"Bearer {ENGINE_API_KEY}",
-        },
-        timeout=MIGRATION_TIMEOUT,
+    last_error = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            response = requests.delete(
+                f"{ENGINE_BASE_URL}{path}",
+                headers={
+                    "Authorization": f"Bearer {ENGINE_API_KEY}",
+                },
+                timeout=MIGRATION_TIMEOUT,
+            )
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                response.raise_for_status()
+                return
+            last_error = f"{response.status_code} {response.text}"
+        except requests.HTTPError:
+            raise
+        except requests.RequestException as e:
+            last_error = str(e)
+        if attempt < MAX_ATTEMPTS - 1:
+            time.sleep(min(2**attempt, 30))
+    raise Exception(
+        f"DELETE {path} failed after {MAX_ATTEMPTS} attempts: {last_error}",
     )
-    r.raise_for_status()
 
 
 def load_state(save_file: str) -> dict:
@@ -59,8 +85,17 @@ def load_state(save_file: str) -> dict:
 
 
 def delete_task_resources(task_id: str) -> None:
-    for _, path_template in DELETE_STEPS:
+    for _, path_template in TASK_RESOURCE_STEPS:
         engine_delete(path_template.format(task_id=task_id))
+
+
+def delete_task_final(task_id: str) -> None:
+    for _, path_template in TASK_FINAL_STEPS:
+        engine_delete(path_template.format(task_id=task_id))
+
+
+def delete_taskless_inference(inference_id: str) -> None:
+    engine_delete(f"/api/v1/migration/inferences/{inference_id}")
 
 
 def print_progress(label: str, done: int, total: int) -> None:
@@ -68,6 +103,22 @@ def print_progress(label: str, done: int, total: int) -> None:
     step = max(1, total // 10)
     if done % step == 0 or done == total:
         print(f"  {label}: {done}/{total} ({done * 100 // total}%)", flush=True)
+
+
+def run_parallel(label: str, items: list, fn) -> None:
+    if not items:
+        return
+    completed = 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fn, item) for item in items]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                executor.shutdown(cancel_futures=True)
+                raise
+            completed += 1
+            print_progress(label, completed, len(items))
 
 
 def main():
@@ -107,13 +158,17 @@ def main():
         return
 
     print("\nDeleting resources...")
+    run_parallel("Task resources", task_ids, delete_task_resources)
+
     for i, task_id in enumerate(task_ids, start=1):
-        delete_task_resources(task_id)
+        delete_task_final(task_id)
         print_progress("Tasks", i, len(task_ids))
 
-    for i, inference_id in enumerate(taskless_inference_ids, start=1):
-        engine_delete(f"/api/v1/migration/inferences/{inference_id}")
-        print_progress("Task-less inferences", i, len(taskless_inference_ids))
+    run_parallel(
+        "Task-less inferences",
+        taskless_inference_ids,
+        delete_taskless_inference,
+    )
 
     print(
         f"\nDone. Deleted resources for {len(task_ids)} task(s) "
