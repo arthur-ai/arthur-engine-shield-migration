@@ -288,6 +288,10 @@ Parameters:
       - 'disabled'
     Default: 'disabled'
     Description: 'Enable GenAI Engine migration mode'
+  GenaiEngineMigrationDeleteChunkSize:
+    Type: Number
+    Default: 10000
+    Description: 'Chunk size for deleting migrated resources in GenAI Engine migration mode'
   GenaiEngineDefaultTenantTokenLimit:
     Type: String
     Default: ''
@@ -587,6 +591,7 @@ Metadata:
           - GenaiEngineCacheTaskRulesCacheEnabled
           - GenaiEngineCacheTaskRulesCacheTTL
           - GenaiEngineMigrationMode
+          - GenaiEngineMigrationDeleteChunkSize
       - Label:
           default: 'Advanced - GenAI Engine (IAM)'
         Parameters:
@@ -781,6 +786,8 @@ Metadata:
         default: 'GenAI Engine Demo Mode'
       GenaiEngineMigrationMode:
         default: 'GenAI Engine Migration Mode'
+      GenaiEngineMigrationDeleteChunkSize:
+        default: 'GenAI Engine Migration Delete Chunk Size'
       GenaiEngineDefaultTenantTokenLimit:
         default: 'GenAI Engine Default Tenant Token Limit'
       GenaiEngineOpenAIProvider:
@@ -1066,6 +1073,7 @@ Resources:
         GenaiEngineUsePIIModelV2: !Ref GenaiEngineUsePIIModelV2
         GenaiEngineDemoMode: !Ref GenaiEngineDemoMode
         GenaiEngineMigrationMode: !Ref GenaiEngineMigrationMode
+        GenaiEngineMigrationDeleteChunkSize: !Ref GenaiEngineMigrationDeleteChunkSize
         GenaiEngineDefaultTenantTokenLimit: !Ref GenaiEngineDefaultTenantTokenLimit
         RecaptchaEnterpriseProjectId: !Ref RecaptchaEnterpriseProjectId
         RecaptchaEnterpriseSiteKey: !Ref RecaptchaEnterpriseSiteKey

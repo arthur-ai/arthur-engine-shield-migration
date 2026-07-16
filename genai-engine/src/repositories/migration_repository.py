@@ -1,10 +1,11 @@
 import logging
-from typing import List, Optional
+from typing import Any, Iterator, List, Optional
 from uuid import UUID
 
 from sqlalchemy import Select, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
+from config.config import Config
 from db_models.inference_models import (
     DatabaseInference,
     DatabaseInferenceFeedback,
@@ -37,6 +38,12 @@ from schemas.migration_schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def chunked(items: list[str]) -> Iterator[list[str]]:
+    size = Config.migration_delete_chunk_size()
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
 
 
 class MigrationRepository:
@@ -256,29 +263,79 @@ class MigrationRepository:
             DatabaseInference.task_id == task_id,
         )
 
+    def materialize_ids(
+        self,
+        ids: list[str] | Select[tuple[str]],
+    ) -> list[str]:
+        if isinstance(ids, list):
+            return ids
+        return list(self.db_session.execute(ids).scalars())
+
+    def select_ids_chunked(
+        self,
+        id_column: InstrumentedAttribute[str],
+        filter_column: InstrumentedAttribute[str],
+        parent_ids: list[str],
+    ) -> list[str]:
+        ids: list[str] = []
+        for chunk in chunked(parent_ids):
+            ids.extend(
+                self.db_session.execute(
+                    select(id_column).where(filter_column.in_(chunk)),
+                ).scalars(),
+            )
+        return ids
+
+    def delete_chunked(
+        self,
+        model: type[Any],
+        filter_column: InstrumentedAttribute[str],
+        ids: list[str],
+    ) -> int:
+        deleted = 0
+        for chunk in chunked(ids):
+            deleted += (
+                self.db_session.query(model)
+                .filter(filter_column.in_(chunk))
+                .delete(synchronize_session=False)
+            )
+        return deleted
+
     def delete_rule_results_for_inferences(
         self,
         inference_ids: list[str] | Select[tuple[str]],
     ) -> int:
-        prompt_ids = select(DatabaseInferencePrompt.id).where(
-            DatabaseInferencePrompt.inference_id.in_(inference_ids),
+        inference_id_list = self.materialize_ids(inference_ids)
+        prompt_ids = self.select_ids_chunked(
+            DatabaseInferencePrompt.id,
+            DatabaseInferencePrompt.inference_id,
+            inference_id_list,
         )
-        response_ids = select(DatabaseInferenceResponse.id).where(
-            DatabaseInferenceResponse.inference_id.in_(inference_ids),
-        )
-
-        prompt_result_ids = select(DatabasePromptRuleResult.id).where(
-            DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
-        )
-        response_result_ids = select(DatabaseResponseRuleResult.id).where(
-            DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
+        response_ids = self.select_ids_chunked(
+            DatabaseInferenceResponse.id,
+            DatabaseInferenceResponse.inference_id,
+            inference_id_list,
         )
 
-        detail_ids = select(DatabaseRuleResultDetail.id).where(
-            DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
-            | DatabaseRuleResultDetail.response_rule_result_id.in_(
-                response_result_ids,
-            ),
+        prompt_result_ids = self.select_ids_chunked(
+            DatabasePromptRuleResult.id,
+            DatabasePromptRuleResult.inference_prompt_id,
+            prompt_ids,
+        )
+        response_result_ids = self.select_ids_chunked(
+            DatabaseResponseRuleResult.id,
+            DatabaseResponseRuleResult.inference_response_id,
+            response_ids,
+        )
+
+        detail_ids = self.select_ids_chunked(
+            DatabaseRuleResultDetail.id,
+            DatabaseRuleResultDetail.prompt_rule_result_id,
+            prompt_result_ids,
+        ) + self.select_ids_chunked(
+            DatabaseRuleResultDetail.id,
+            DatabaseRuleResultDetail.response_rule_result_id,
+            response_result_ids,
         )
 
         detail_child_models = (
@@ -289,30 +346,27 @@ class MigrationRepository:
             DatabaseToxicityScore,
         )
         for detail_child_model in detail_child_models:
-            self.db_session.query(detail_child_model).filter(
-                detail_child_model.rule_result_detail_id.in_(detail_ids),
-            ).delete(synchronize_session=False)
-
-        self.db_session.query(DatabaseRuleResultDetail).filter(
-            DatabaseRuleResultDetail.prompt_rule_result_id.in_(prompt_result_ids)
-            | DatabaseRuleResultDetail.response_rule_result_id.in_(
-                response_result_ids,
-            ),
-        ).delete(synchronize_session=False)
-
-        deleted = (
-            self.db_session.query(DatabasePromptRuleResult)
-            .filter(
-                DatabasePromptRuleResult.inference_prompt_id.in_(prompt_ids),
+            self.delete_chunked(
+                detail_child_model,
+                detail_child_model.rule_result_detail_id,
+                detail_ids,
             )
-            .delete(synchronize_session=False)
+
+        self.delete_chunked(
+            DatabaseRuleResultDetail,
+            DatabaseRuleResultDetail.id,
+            detail_ids,
         )
-        deleted += (
-            self.db_session.query(DatabaseResponseRuleResult)
-            .filter(
-                DatabaseResponseRuleResult.inference_response_id.in_(response_ids),
-            )
-            .delete(synchronize_session=False)
+
+        deleted = self.delete_chunked(
+            DatabasePromptRuleResult,
+            DatabasePromptRuleResult.id,
+            prompt_result_ids,
+        )
+        deleted += self.delete_chunked(
+            DatabaseResponseRuleResult,
+            DatabaseResponseRuleResult.id,
+            response_result_ids,
         )
 
         self.db_session.commit()
@@ -322,12 +376,10 @@ class MigrationRepository:
         self,
         inference_ids: list[str] | Select[tuple[str]],
     ) -> int:
-        deleted = (
-            self.db_session.query(DatabaseInferenceFeedback)
-            .filter(
-                DatabaseInferenceFeedback.inference_id.in_(inference_ids),
-            )
-            .delete(synchronize_session=False)
+        deleted = self.delete_chunked(
+            DatabaseInferenceFeedback,
+            DatabaseInferenceFeedback.inference_id,
+            self.materialize_ids(inference_ids),
         )
         self.db_session.commit()
         return deleted
@@ -336,33 +388,44 @@ class MigrationRepository:
         self,
         inference_ids: list[str] | Select[tuple[str]],
     ) -> int:
-        prompt_ids = select(DatabaseInferencePrompt.id).where(
-            DatabaseInferencePrompt.inference_id.in_(inference_ids),
+        inference_id_list = self.materialize_ids(inference_ids)
+        prompt_ids = self.select_ids_chunked(
+            DatabaseInferencePrompt.id,
+            DatabaseInferencePrompt.inference_id,
+            inference_id_list,
         )
-        response_ids = select(DatabaseInferenceResponse.id).where(
-            DatabaseInferenceResponse.inference_id.in_(inference_ids),
+        response_ids = self.select_ids_chunked(
+            DatabaseInferenceResponse.id,
+            DatabaseInferenceResponse.inference_id,
+            inference_id_list,
         )
 
-        self.db_session.query(DatabaseInferencePromptContent).filter(
-            DatabaseInferencePromptContent.inference_prompt_id.in_(prompt_ids),
-        ).delete(synchronize_session=False)
-        self.db_session.query(DatabaseInferenceResponseContent).filter(
-            DatabaseInferenceResponseContent.inference_response_id.in_(response_ids),
-        ).delete(synchronize_session=False)
+        self.delete_chunked(
+            DatabaseInferencePromptContent,
+            DatabaseInferencePromptContent.inference_prompt_id,
+            prompt_ids,
+        )
+        self.delete_chunked(
+            DatabaseInferenceResponseContent,
+            DatabaseInferenceResponseContent.inference_response_id,
+            response_ids,
+        )
 
-        self.db_session.query(DatabaseInferencePrompt).filter(
-            DatabaseInferencePrompt.inference_id.in_(inference_ids),
-        ).delete(synchronize_session=False)
-        self.db_session.query(DatabaseInferenceResponse).filter(
-            DatabaseInferenceResponse.inference_id.in_(inference_ids),
-        ).delete(synchronize_session=False)
+        self.delete_chunked(
+            DatabaseInferencePrompt,
+            DatabaseInferencePrompt.id,
+            prompt_ids,
+        )
+        self.delete_chunked(
+            DatabaseInferenceResponse,
+            DatabaseInferenceResponse.id,
+            response_ids,
+        )
 
-        deleted = (
-            self.db_session.query(DatabaseInference)
-            .filter(
-                DatabaseInference.id.in_(inference_ids),
-            )
-            .delete(synchronize_session=False)
+        deleted = self.delete_chunked(
+            DatabaseInference,
+            DatabaseInference.id,
+            inference_id_list,
         )
         self.db_session.commit()
         return deleted
