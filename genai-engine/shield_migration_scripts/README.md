@@ -13,6 +13,11 @@ All three take the same date-window flags — `--last-days`, or `--from-date`
 
 There is also **`delete_migrated_resources.py`** for rolling back a migration. It deletes everything a specific migration run inserted into the Engine, using that run's checkpoint file.
 
+> **Note:** Archived tasks and inferences/feedback referencing archived tasks are
+> excluded from the migration. When running the pre_migration_scope.py in exact mode, the
+> number of tasks and inferences not migrated will be reported. And, similarly, in the
+> verify_counts.py script, the number that weren't migrated will be reported.
+
 Shared dependencies:
 
 ```bash
@@ -190,7 +195,7 @@ either database directly. Work is split into three phases (`config`, `inferences
 | `ENGINE_API_KEY` | Engine admin API key |
 | `ENGINE_ORG_ID` | UUID of the Engine org to migrate data into |
 | `MIGRATION_CHECKPOINT_DIR` | *(optional)* directory for checkpoint files, default `migration_states` |
-| `SHIELD_PAGE_SIZE` | *(optional)* rows fetched per Shield page, default `5000` |
+| `SHIELD_PAGE_SIZE` | *(optional)* rows fetched per Shield page, default `4999`. Must be greater than 0 and less than 5000. |
 | `ENGINE_BATCH_SIZE` | *(optional)* inferences per POST to the Engine, default `500` |
 | `MIGRATION_TIMEOUT` | *(optional)* per-request HTTP timeout in seconds, default `30` |
 
