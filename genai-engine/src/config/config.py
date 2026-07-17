@@ -63,6 +63,14 @@ class Config:
             return False
         return True
 
+    @classmethod
+    def migration_delete_chunk_size(cls) -> int:
+        migration_delete_chunk_size = get_env_var(
+            constants.GENAI_ENGINE_MIGRATION_DELETE_CHUNK_SIZE_ENV_VAR,
+            default="10000",
+        )
+        return int(migration_delete_chunk_size)
+
     # Default whitelist used when the env var is unset. Per UP-4461: tenant
     # callers see at most these two models across enabled providers.
     DEFAULT_TENANT_MODEL_WHITELIST: tuple[str, ...] = (
