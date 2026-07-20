@@ -8,8 +8,12 @@ The typical flow is:
 2. **`migrate_shield_to_engine.py`** — perform the migration.
 3. **`verify_counts.py`** — confirm source and target row counts match afterward.
 
-All three take the same date-window flags — `--last-days`, or `--from-date`
-(with an optional `--to-date` that defaults to now). Use the **same window**. Across all three so the sizing, migration, and verification cover exactly the same data.
+`pre_migration_scope.py` and `migrate_shield_to_engine.py` take the same
+date-window flags — `--last-days`, or `--from-date` (with an optional
+`--to-date` that defaults to now). Use the **same window** for both so the
+sizing and migration cover exactly the same data. `verify_counts.py` takes the
+migration run's checkpoint file instead, so it always verifies exactly what
+that run migrated.
 
 There is also **`delete_migrated_resources.py`** for rolling back a migration. It deletes everything a specific migration run inserted into the Engine, using that run's checkpoint file.
 
@@ -216,6 +220,11 @@ python migrate_shield_to_engine.py --phase inferences --from-date 2020-01-01 --t
 
 # Resume an interrupted run from its checkpoint file
 python migrate_shield_to_engine.py --phase inferences --resume migration_states/migration_state_2020-01-01_to_2021-01-01.json
+
+# Migrate by task(s) (config, inferences, and feedback for that task only).
+# A date window is still required, same as a full run.
+python migrate_shield_to_engine.py --task-ids <task_id> --last-days 90
+python migrate_shield_to_engine.py --task-ids <task_id_1> <task_id_2> --from-date 2025-01-01
 ```
 
 ### Options
@@ -226,12 +235,34 @@ python migrate_shield_to_engine.py --phase inferences --resume migration_states/
 | `--from-date` | Start date (inclusive), ISO format. |
 | `--to-date` | End date (exclusive), ISO format. Optional; defaults to now. |
 | `--last-days` | Shorthand to migrate the last N days. Takes precedence over `--from-date`/`--to-date`. |
+| `--task-ids` | One or more Shield task IDs. Scopes all three phases to those tasks. A date window is still required. |
 | `--resume` | Path to an existing checkpoint (`migration_state_*.json`) to resume from. |
 
 > **Note:** Config (tasks, rules, default rules, and task–rule links) is always
 > migrated in full; the date window only applies to inferences and feedback.
 > Progress is checkpointed per phase, so re-running with the same window skips
 > work that already completed.
+
+### Per-task migration (`--task-ids`)
+
+`--task-ids` scopes the run to specific tasks, so a large migration can be done
+one task (or a few tasks) at a time:
+
+- **Config** — only the selected tasks, their rules, and their task–rule links
+  are migrated. Default rules and archived rules are still migrated in full:
+  default rules are global, and the selected tasks' historical rule results may
+  reference rules that have since been archived (Shield cannot filter archived
+  rules by task).
+- **Inferences** — filtered by task in Shield's migration export endpoint, so
+  only the selected tasks' inferences are fetched. Task-less inferences are
+  never migrated by a task-scoped run.
+- **Feedback** — filtered server-side by Shield, so only the selected tasks'
+  feedback is fetched.
+
+Each task scope gets its own checkpoint file, so runs for different tasks never
+conflict with each other, and resuming a task-scoped run picks up where that
+scope left off. Rolling back with `delete_migrated_resources.py` works the same
+as for a full run — pass that run's checkpoint file.
 
 The checkpoint file also records the IDs of every task the run migrated
 (`migrated_task_ids`) and of every migrated inference that has no task
@@ -241,12 +272,12 @@ checkpoint file around after a run completes.
 
 ## `verify_counts.py`
 
-Run **after** a migration to confirm it was complete. It connects to **both**
-databases directly and compares row counts for the same date window: Shield
-(source) vs Engine (target). Each row prints `shield=… engine=…` with a ✓ when
-they match and ✗ when they don't. A final section checks that no org-scoped rows
-were written to the Engine without an `org_id`. Exits `0` if everything matches,
-`1` otherwise.
+Run **after** a migration to confirm it was complete. It reads the date window
+and task scope from the migration run's checkpoint file, then connects to
+**both** databases directly and compares row counts: Shield (source) vs Engine
+(target). Each row prints `shield=… engine=…` with a ✓ when they match and ✗
+when they don't. A final section checks that no org-scoped rows were written to
+the Engine without an `org_id`. Exits `0` if everything matches, `1` otherwise.
 
 ### Setup
 
@@ -299,16 +330,23 @@ ENGINE_ORG_ID="<target-org-uuid>"
 
 ### Usage
 
-A date window is **required** — pass `--last-days`, or `--from-date` (with an
-optional `--to-date`, which defaults to now). Use the **same window** the
-migration ran with.
+Pass the checkpoint file of the migration run to verify with `--save-file`.
+The date window and task scope (if the run used `--task-ids`) are read from it.
 
 ```bash
-python verify_counts.py --last-days 90
-python verify_counts.py --from-date 2020-01-01 --to-date 2021-01-01
+python verify_counts.py --save-file migration_states/migration_state_2020-01-01_to_2021-01-01.json
 ```
 
+### Options
+
+| Flag | Description |
+|---|---|
+| `--save-file` | Path to the `migration_state_*.json` checkpoint of the run to verify. Required. |
+
 ### Output
+
+For a task-scoped run, a `Tasks:` line lists the task IDs and all counts are
+scoped to those tasks.
 
 ```
 ======================================================================
