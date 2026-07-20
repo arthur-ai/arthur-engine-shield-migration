@@ -1,8 +1,8 @@
 # verify_counts.py
 """
 Verifies a Shield → Engine migration by comparing row counts between the two
-PostgreSQL databases directly (no Shield API), over the same date window that
-was migrated.
+PostgreSQL databases directly (no Shield API), over the same date window and
+task scope recorded in the migration run's checkpoint file.
 
 For each section it counts the rows in Shield (source) and in Engine (target)
 and reports a ✓ when they match, ✗ when they don't. Shield inferences that
@@ -31,22 +31,18 @@ Engine DB connection (target): same variables with an ENGINE_ prefix
 The Engine org the data was migrated into:
     ENGINE_ORG_ID
 
-A date window is required: pass --last-days, or --from-date (with an optional
---to-date, which defaults to now). Use the same window the migration ran with.
-
 Usage:
-    python verify_counts.py --from-date 2025-01-01 --to-date 2026-01-01
-    python verify_counts.py --last-days 180
-    python verify_counts.py --from-date 2026-01-01
+    python verify_counts.py --save-file migration_states/migration_state_2026-01-21_to_2026-07-20.json
 """
 
 import argparse
+import json
 import os
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 load_dotenv()
@@ -74,15 +70,6 @@ def get_engine(prefix: str) -> Engine:
     return create_engine(conn_str, pool_pre_ping=True)
 
 
-def parse_window(args):
-    now = datetime.now(timezone.utc)
-    if args.last_days:
-        return now - timedelta(days=args.last_days), now
-    from_dt = datetime.fromisoformat(args.from_date) if args.from_date else None
-    to_dt = datetime.fromisoformat(args.to_date) if args.to_date else None
-    return from_dt, to_dt
-
-
 def fmt(n):
     return f"{n:,}"
 
@@ -105,11 +92,23 @@ def and_clause(where, condition):
     return where + (" AND " if where else "WHERE ") + condition
 
 
+def task_clause(where, params, task_ids):
+    """Append an i.task_id filter to a WHERE fragment when task-scoped."""
+    if not task_ids:
+        return where, params
+    return (
+        and_clause(where, "i.task_id IN :task_ids"),
+        {**params, "task_ids": task_ids},
+    )
+
+
 def count(conn, table, where="", params=None):
-    return conn.execute(
-        text(f"SELECT COUNT(*) FROM {table} {where}"),
-        params or {},
-    ).scalar_one()
+    params = params or {}
+    stmt = text(f"SELECT COUNT(*) FROM {table} {where}")
+    for key, value in params.items():
+        if isinstance(value, list):
+            stmt = stmt.bindparams(bindparam(key, expanding=True))
+    return conn.execute(stmt, params).scalar_one()
 
 
 def compare(label, shield_n, engine_n):
@@ -117,7 +116,7 @@ def compare(label, shield_n, engine_n):
     return f"  {status:<10} {label:<28} shield={fmt(shield_n)}  engine={fmt(engine_n)}"
 
 
-def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
+def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None):
     lines = []
 
     window_label = "all time"
@@ -129,6 +128,8 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
     lines.append(f"\n{'='*70}")
     lines.append(f"  Shield → Engine Migration Verification")
     lines.append(f"  Window: {window_label}")
+    if task_ids:
+        lines.append(f"  Tasks:  {', '.join(task_ids)}")
     lines.append(f"  Org:    {org_id}")
     lines.append(f"{'='*70}\n")
 
@@ -174,20 +175,26 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
         # ── Inferences ──────────────────────────────────────────────────────
         lines.append("Inferences")
         for label, from_sql in inference_tables:
-            s = count(
-                sc,
-                f"{from_sql} {archived_join}",
+            s_where, s_params = task_clause(
                 and_clause(parent_where, kept),
                 parent_params,
+                task_ids,
             )
-            e = count(ec, from_sql, parent_where, parent_params)
+            e_where, e_params = task_clause(parent_where, parent_params, task_ids)
+            s = count(sc, f"{from_sql} {archived_join}", s_where, s_params)
+            e = count(ec, from_sql, e_where, e_params)
             all_match = all_match and s == e
             lines.append(compare(label, s, e))
+        excluded_where, excluded_params = task_clause(
+            and_clause(parent_where, excluded),
+            parent_params,
+            task_ids,
+        )
         excluded_n = count(
             sc,
             f"inferences i {archived_join}",
-            and_clause(parent_where, excluded),
-            parent_params,
+            excluded_where,
+            excluded_params,
         )
         archived_tasks_n = count(sc, "tasks", "WHERE archived")
         lines.append(
@@ -218,13 +225,21 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
             ),
         )
         for table, shield_from_sql in rule_result_tables:
-            s = count(
-                sc,
-                f"{shield_from_sql} {archived_join}",
+            s_where, s_params = task_clause(
                 and_clause(rr_where, kept),
                 rr_params,
+                task_ids,
             )
-            e = count(ec, table, org_where, org_params)
+            s = count(sc, f"{shield_from_sql} {archived_join}", s_where, s_params)
+            if task_ids:
+                e_where, e_params = task_clause(
+                    and_clause(rr_where, "rr.org_id = :org_id"),
+                    {**rr_params, "org_id": org_id},
+                    task_ids,
+                )
+                e = count(ec, shield_from_sql, e_where, e_params)
+            else:
+                e = count(ec, table, org_where, org_params)
             all_match = all_match and s == e
             lines.append(compare(table, s, e))
         lines.append("")
@@ -238,14 +253,37 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
             if to_dt:
                 fb_clauses.append(f"{column} < :to_dt")
         fb_where = ("WHERE " + " AND ".join(fb_clauses)) if fb_clauses else ""
+        s_where, s_params = task_clause(
+            and_clause(fb_where, kept),
+            inf_params,
+            task_ids,
+        )
         s = count(
             sc,
             "inference_feedback f "
             f"JOIN inferences i ON f.inference_id = i.id {archived_join}",
-            and_clause(fb_where, kept),
-            inf_params,
+            s_where,
+            s_params,
         )
-        e = count(ec, "inference_feedback", org_where, org_params)
+        if task_ids:
+            fb_engine_where, fb_engine_params = window_clause(
+                from_dt,
+                to_dt,
+                column="f.created_at",
+            )
+            e_where, e_params = task_clause(
+                and_clause(fb_engine_where, "f.org_id = :org_id"),
+                {**fb_engine_params, "org_id": org_id},
+                task_ids,
+            )
+            e = count(
+                ec,
+                "inference_feedback f JOIN inferences i ON f.inference_id = i.id",
+                e_where,
+                e_params,
+            )
+        else:
+            e = count(ec, "inference_feedback", org_where, org_params)
         all_match = all_match and s == e
         lines.append(compare("inference_feedback", s, e))
         lines.append("")
@@ -283,37 +321,27 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--from-date",
-        default=None,
-        help="Start date (inclusive), e.g. 2020-01-01",
-    )
-    parser.add_argument(
-        "--to-date",
-        default=None,
-        help="End date (exclusive), e.g. 2021-01-01",
-    )
-    parser.add_argument(
-        "--last-days",
-        type=int,
-        default=None,
-        help="Shorthand: verify the last N days",
+        "--save-file",
+        required=True,
+        metavar="STATE_FILE",
+        help="Path to the migration_state_*.json checkpoint of the run to verify",
     )
     args = parser.parse_args()
 
-    # Require a window start:
-    # --last-days, or --from-date (--to-date optional, defaults to now).
-    if args.last_days is None and args.from_date is None:
-        parser.error(
-            "specify a date window: --last-days N, or --from-date "
-            "(with optional --to-date)",
-        )
+    with open(args.save_file) as f:
+        state = json.load(f)
+
+    stored_from = state.get("from_dt")
+    stored_to = state.get("to_dt")
+    from_dt = datetime.fromisoformat(stored_from) if stored_from else None
+    to_dt = datetime.fromisoformat(stored_to) if stored_to else None
+    task_ids = sorted(state.get("task_ids") or []) or None
 
     org_id = os.environ["ENGINE_ORG_ID"]
-    from_dt, to_dt = parse_window(args)
     shield = get_engine("SHIELD")
     engine = get_engine("ENGINE")
 
-    ok = verify(shield, engine, from_dt, to_dt, org_id)
+    ok = verify(shield, engine, from_dt, to_dt, org_id, task_ids)
     raise SystemExit(0 if ok else 1)
 
 

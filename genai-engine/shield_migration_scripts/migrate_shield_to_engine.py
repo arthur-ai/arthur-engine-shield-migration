@@ -10,9 +10,12 @@ Usage:
     python migrate_shield_to_engine.py --phase config --from-date 2025-01-01 --to-date 2026-01-01
     python migrate_shield_to_engine.py --phase inferences --from-date 2026-01-01
     python migrate_shield_to_engine.py --phase feedback --last-days 180
+    python migrate_shield_to_engine.py --task-ids <task_id> --last-days 90
+    python migrate_shield_to_engine.py --task-ids <task_id_1> <task_id_2> --from-date 2025-01-01
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -192,28 +195,48 @@ def parse_window(args):
     return from_dt, to_dt
 
 
-def checkpoint_path(from_dt, to_dt) -> str:
+def task_scope_slug(task_ids) -> str:
+    """Filename suffix identifying a run's task scope ('' for full runs)."""
+    if not task_ids:
+        return ""
+    if len(task_ids) == 1:
+        return f"_task_{task_ids[0]}"
+    digest = hashlib.sha1(",".join(task_ids).encode()).hexdigest()[:8]
+    return f"_tasks_{len(task_ids)}_{digest}"
+
+
+def checkpoint_path(from_dt, to_dt, task_ids=None) -> str:
     window_slug = (
         f"{from_dt.date() if from_dt else 'all'}"
         f"_to_{to_dt.date() if to_dt else 'now'}"
     )
-    return f"{CHECKPOINT_DIR}/migration_state_{window_slug}.json"
+    return (
+        f"{CHECKPOINT_DIR}/migration_state_{window_slug}"
+        f"{task_scope_slug(task_ids)}.json"
+    )
 
 
-def latest_checkpoint_path():
-    """Path of the most-recently-updated checkpoint, or None if none exist.
+def latest_checkpoint_path(task_ids=None):
+    """Path of the most-recently-updated checkpoint with the same task scope,
+    or None if none exist.
 
-    Ranks by each checkpoint's own last_updated_at field rather than file mtime.
+    Task-scoped and full-migration runs never conflict with each other, so only
+    checkpoints whose task_ids match the requested scope are considered. Ranks
+    by each checkpoint's own last_updated_at field rather than file mtime.
     """
     if not os.path.isdir(CHECKPOINT_DIR):
         return None
+    requested_scope = sorted(task_ids or [])
     latest_path, latest_ts = None, None
     for f in os.listdir(CHECKPOINT_DIR):
         if not f.endswith(".json"):
             continue
         path = os.path.join(CHECKPOINT_DIR, f)
         with open(path) as fh:
-            ts = json.load(fh).get("last_updated_at")
+            state = json.load(fh)
+        if sorted(state.get("task_ids") or []) != requested_scope:
+            continue
+        ts = state.get("last_updated_at")
         if ts is not None and (latest_ts is None or ts > latest_ts):
             latest_path, latest_ts = path, ts
     return latest_path
@@ -228,6 +251,7 @@ class Checkpoint:
 
     State keys:
       from_dt / to_dt         — date window (ISO strings or null)
+      task_ids                — task IDs the run is scoped to ([] = all tasks)
       phases_completed        — list of phase names that finished successfully
       inference_page          — next Shield inference page to fetch (starts at 0)
       feedback_page           — next Shield feedback page to fetch (starts at 0)
@@ -243,10 +267,12 @@ class Checkpoint:
             # Backfill keys added after this checkpoint was first written.
             self.state.setdefault("migrated_task_ids", [])
             self.state.setdefault("migrated_taskless_inference_ids", [])
+            self.state.setdefault("task_ids", [])
         else:
             self.state = {
                 "from_dt": None,
                 "to_dt": None,
+                "task_ids": [],
                 "phases_completed": [],
                 "inference_page": 0,
                 "feedback_page": 0,
@@ -256,6 +282,10 @@ class Checkpoint:
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
             self._save()
+
+    def set_task_scope(self, task_ids):
+        self.state["task_ids"] = sorted(task_ids or [])
+        self._save()
 
     def set_window(self, from_dt, to_dt):
         new_from = from_dt.isoformat() if from_dt else None
@@ -325,23 +355,52 @@ class Checkpoint:
 # ── Phase 1: Config (tasks + rules) ──────────────────────────────────────────
 
 
-def migrate_config(ckpt: Checkpoint):
+def migrate_config(ckpt: Checkpoint, task_ids=None):
     if ckpt.phase_completed("config"):
         print("[config] Already completed — skipping.")
         return
 
     print("=== Phase 1: Config ===")
 
-    tasks = shield_paginate("/api/v2/tasks/search", {}, "count", "tasks")
+    search_body = {"task_ids": task_ids} if task_ids else {}
+    tasks = shield_paginate("/api/v2/tasks/search", search_body, "count", "tasks")
     print(f"  Fetched {len(tasks)} tasks")
 
+    if task_ids:
+        found = {t["id"] for t in tasks}
+        missing = [t for t in task_ids if t not in found]
+
+        if missing:
+            print(f"  WARNING: task ids not found in Shield: {', '.join(missing)}")
+
     default_rules = shield_get("/api/v2/default_rules")
-    task_rules = shield_paginate(
-        "/api/v2/rules/search",
-        {"rule_scopes": ["task"]},
-        "count",
-        "rules",
-    )
+
+    if task_ids:
+        # /rules/search has no task filter, but each selected task embeds its
+        # full rule objects — so task-scoped rules come from there instead.
+        # The embedded `enabled` flag is link data, not rule data; drop it.
+        default_ids = {r["id"] for r in default_rules}
+        seen: set = set()
+        task_rules = []
+        for task in tasks:
+            for rule in task.get("rules", []):
+                if rule["id"] in default_ids or rule["id"] in seen:
+                    continue
+                seen.add(rule["id"])
+                task_rules.append(
+                    {k: v for k, v in rule.items() if k != "enabled"},
+                )
+    else:
+        task_rules = shield_paginate(
+            "/api/v2/rules/search",
+            {"rule_scopes": ["task"]},
+            "count",
+            "rules",
+        )
+
+    # Archived rules are always migrated in full: the selected tasks' old rule
+    # results may reference rules that have since been archived, and Shield
+    # offers no way to filter archived rules by task.
     archived_rules = shield_paginate(
         "/api/v2/rules/search",
         {"include_archived": True},
@@ -413,15 +472,16 @@ def migrate_config(ckpt: Checkpoint):
 # ── Phase 2: Inferences ───────────────────────────────────────────────────────
 
 
-def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
+def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     if ckpt.phase_completed("inferences"):
         print("[inferences] Already completed — skipping.")
         return
 
+    scope_note = f" tasks={','.join(task_ids)}" if task_ids else ""
     print(
         f"=== Phase 2: Inferences "
         f"(from={from_dt.date() if from_dt else 'beginning'} "
-        f"to={to_dt.date() if to_dt else 'now'}) ===",
+        f"to={to_dt.date() if to_dt else 'now'}{scope_note}) ===",
     )
 
     # /api/v2/migration/inferences/query returns the full inference subtree with
@@ -432,6 +492,8 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
         inf_params["start_time"] = from_dt.isoformat()
     if to_dt:
         inf_params["end_time"] = to_dt.isoformat()
+    if task_ids:
+        inf_params["task_ids"] = task_ids
 
     start_page = ckpt.state["inference_page"]
     if start_page > 0:
@@ -442,8 +504,10 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
 
     page = start_page
     processed = start_page * SHIELD_PAGE_SIZE
+    matched = 0
     inserted = 0
     skipped = 0
+    wanted_tasks = set(task_ids) if task_ids else None
 
     while True:
         fetch_params = {
@@ -458,26 +522,37 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
         if not batch:
             break
 
-        page_inserted, page_skipped = engine_post_batches(
-            "/api/v1/migration/inferences/bulk",
-            "inferences",
-            batch,
-        )
-        inserted += page_inserted
-        skipped += page_skipped
+        if wanted_tasks is not None:
+            to_send = [inf for inf in batch if inf.get("task_id") in wanted_tasks]
+        else:
+            to_send = batch
+
+        matched += len(to_send)
+        if to_send:
+            page_inserted, page_skipped = engine_post_batches(
+                "/api/v1/migration/inferences/bulk",
+                "inferences",
+                to_send,
+            )
+            inserted += page_inserted
+            skipped += page_skipped
 
         # Task-less inferences aren't reachable by task-scoped cleanup, so record
-        # their IDs for the delete script to remove them directly.
-        ckpt.record_taskless_inferences(
-            [inf["id"] for inf in batch if not inf.get("task_id")],
-        )
+        # their IDs for the delete script to remove them directly. A task-scoped
+        # run never migrates task-less inferences, so there is nothing to record.
+        if wanted_tasks is None:
+            ckpt.record_taskless_inferences(
+                [inf["id"] for inf in batch if not inf.get("task_id")],
+            )
 
         processed += len(batch)
         page += 1
         ckpt.update_inference_page(page)  # checkpoint: next page to fetch on resume
         pct = processed / total_count * 100 if total_count else 0
+        matched_note = f", {matched:,} matched tasks" if wanted_tasks else ""
         print(
-            f"  [{pct:5.1f}%] {processed:,} / {total_count:,} inferences processed "
+            f"  [{pct:5.1f}%] {processed:,} / {total_count:,} inferences scanned"
+            f"{matched_note} "
             f"({inserted:,} inserted, {skipped:,} skipped) (page {page - 1})",
         )
 
@@ -495,7 +570,7 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt):
 # ── Phase 3: Feedback ─────────────────────────────────────────────────────────
 
 
-def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt):
+def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     if ckpt.phase_completed("feedback"):
         print("[feedback] Already completed — skipping.")
         return
@@ -508,6 +583,8 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt):
         fb_params["start_time"] = from_dt.isoformat()
     if to_dt:
         fb_params["end_time"] = to_dt.isoformat()
+    if task_ids:
+        fb_params["task_id"] = task_ids
 
     start_page = ckpt.state["feedback_page"]
     page = start_page
@@ -616,7 +693,7 @@ def prompt_phases(available: list) -> list:
             return [p for p in available if p in chosen]
 
 
-def resolve_conflict(ckpt, from_dt, to_dt, to_is_now):
+def resolve_conflict(ckpt, from_dt, to_dt, to_is_now, task_ids=None):
     """Reconcile a requested window against an existing checkpoint's window.
 
     Returns (effective_ckpt, from_dt, to_dt). The returned checkpoint may be a
@@ -655,8 +732,9 @@ def resolve_conflict(ckpt, from_dt, to_dt, to_is_now):
         if choice == 2:
             sys.exit(0)
         # Fresh checkpoint for the continuation window prior_to → to_dt.
-        new_ckpt = Checkpoint(checkpoint_path(prior_to, to_dt))
+        new_ckpt = Checkpoint(checkpoint_path(prior_to, to_dt, task_ids))
         new_ckpt.set_window(prior_to, to_dt)
+        new_ckpt.set_task_scope(task_ids)
         return new_ckpt, prior_to, to_dt, prompt_phases(ALL_PHASES)
 
     choice = prompt_choice(
@@ -710,6 +788,14 @@ def main():
         help="Shorthand: migrate the last N days",
     )
     parser.add_argument(
+        "--task-ids",
+        nargs="+",
+        default=None,
+        metavar="TASK_ID",
+        help="Migrate only these tasks: their config, inferences, and feedback. "
+        "A date window is still required.",
+    )
+    parser.add_argument(
         "--resume",
         default=None,
         metavar="STATE_FILE",
@@ -726,6 +812,7 @@ def main():
         )
 
     from_dt, to_dt = parse_window(args)
+    task_ids = sorted(set(args.task_ids)) if args.task_ids else None
 
     # Phases to run. Defaults to the --phase flag; a "Continue" choice below
     # lets the user override this interactively.
@@ -741,9 +828,17 @@ def main():
         stored_to = ckpt.state.get("to_dt")
         from_dt = datetime.fromisoformat(stored_from) if stored_from else None
         to_dt = datetime.fromisoformat(stored_to) if stored_to else None
+        stored_task_ids = ckpt.state.get("task_ids") or []
+        if task_ids is not None and task_ids != sorted(stored_task_ids):
+            parser.error(
+                f"task scope mismatch on resume: checkpoint is scoped to "
+                f"{stored_task_ids or 'all tasks'}, command requested {task_ids}. "
+                f"Pass --resume without --task-ids, or start a new run.",
+            )
+        task_ids = stored_task_ids or None
     else:
         to_is_now = args.to_date is None
-        latest = latest_checkpoint_path()
+        latest = latest_checkpoint_path(task_ids)
         if latest:
             ckpt = Checkpoint(latest)
             ckpt, from_dt, to_dt, chosen_phases = resolve_conflict(
@@ -751,19 +846,21 @@ def main():
                 from_dt,
                 to_dt,
                 to_is_now,
+                task_ids,
             )
             if chosen_phases is not None:
                 phases = chosen_phases
         else:
-            ckpt = Checkpoint(checkpoint_path(from_dt, to_dt))
+            ckpt = Checkpoint(checkpoint_path(from_dt, to_dt, task_ids))
             ckpt.set_window(from_dt, to_dt)
+            ckpt.set_task_scope(task_ids)
 
     if "config" in phases:
-        migrate_config(ckpt)
+        migrate_config(ckpt, task_ids)
     if "inferences" in phases:
-        migrate_inferences(ckpt, from_dt, to_dt)
+        migrate_inferences(ckpt, from_dt, to_dt, task_ids)
     if "feedback" in phases:
-        migrate_feedback(ckpt, from_dt, to_dt)
+        migrate_feedback(ckpt, from_dt, to_dt, task_ids)
 
     print(f"\nMigration complete. State saved to: {ckpt.path}")
 
