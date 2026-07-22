@@ -189,6 +189,10 @@ genaiEngineUsePIIModelV2: "true"
 genaiEngineCacheTaskRulesCacheEnabled: true
 # Task rules cache TTL in seconds
 genaiEngineCacheTaskRulesCacheTTL: 60
+# Set to enabled to turn on Shield migration mode (enables the migration API endpoints)
+genaiEngineMigrationMode: "disabled"
+# Chunk size for deleting migrated resources in migration mode
+genaiEngineMigrationDeleteChunkSize: 10000
 # Set to enabled to add Transfer-Encoding: chunked header and strip Content-Length from all responses
 transferEncodingMiddlewareEnabled: "enabled"
 # Number of replicas of GenAI Engine pod running in k8s cluster (This is automatically overridden if the GenAI Engine HPA is enabled)
