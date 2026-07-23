@@ -57,6 +57,9 @@ arthur-engine.code-workspace
 genai-engine/audit_logs
 genai-engine/tests/test_audit_logs
 
+# arthur-blazity-ai-workflow bot session memory — must not be committed to this public repo
+blazebot/
+
 
 # Migration States
 **/migration_states/*
