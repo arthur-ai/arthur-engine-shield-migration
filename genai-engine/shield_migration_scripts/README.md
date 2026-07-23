@@ -237,6 +237,7 @@ python migrate_shield_to_engine.py --task-ids <task_id_1> <task_id_2> --from-dat
 | `--last-days` | Shorthand to migrate the last N days. Takes precedence over `--from-date`/`--to-date`. |
 | `--task-ids` | One or more Shield task IDs. Scopes all three phases to those tasks. A date window is still required. |
 | `--resume` | Path to an existing checkpoint (`migration_state_*.json`) to resume from. |
+| `--timing` | Print a timing report at the end of the run. |
 
 > **Note:** Config (tasks, rules, default rules, and task–rule links) is always
 > migrated in full; the date window only applies to inferences and feedback.
@@ -269,6 +270,38 @@ The checkpoint file also records the IDs of every task the run migrated
 (`migrated_taskless_inference_ids`). These lists are what
 `delete_migrated_resources.py` uses to roll the migration back, so keep the
 checkpoint file around after a run completes.
+
+### Timing report (`--timing`)
+
+With `--timing`, a report is printed at the end of the run. The config phase
+shows the duration of each step; the inferences and feedback phases show total
+time, per-record average, and the **measured** wall-clock time of each full
+10k / 100k / 1m chunk (a chunk line appears only once at least one full chunk
+of that size completed). Chunks are measured for records processed in the
+current run only, so a resumed run's numbers reflect that run alone.
+
+```
+=== Timing Report ===
+
+config phase:
+  Fetch tasks: 1.3s
+  Fetch rules: 0.9s
+  Insert rules: 1.7s
+  Insert tasks: 3.4s
+  Insert task-rule links: 1.1s
+  Total: 8.4s
+
+inferences phase:
+  Total: 48m 02s (1,010,260 inferences)
+  Average per inference: 2.85 ms
+  Per 10k inferences (measured): avg 28.5s, fastest 13.0s, slowest 1m 38s (101 full chunks)
+  Per 100k inferences (measured): avg 4m 45s, fastest 4m 02s, slowest 5m 31s (10 full chunks)
+  Per 1m inferences (measured): avg 47m 33s, fastest 47m 33s, slowest 47m 33s (1 full chunks)
+
+feedback phase:
+  Total: 0.5s (1 feedback records)
+  Average per feedback record: 452.62 ms
+```
 
 ## `verify_counts.py`
 

@@ -183,6 +183,97 @@ def engine_post_batches(path, items_key, items):
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 
+def format_duration(seconds: float) -> str:
+    """Human-readable duration, e.g. '1h 02m 03s', '4m 09s', '12.3s'."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    return f"{minutes}m {secs:02d}s"
+
+
+TIMINGS: dict = {}  # phase -> steps, total, count, unit, chunk_times
+
+CHUNK_SIZES = [10_000, 100_000, 1_000_000]
+
+
+def format_chunk_size(size: int) -> str:
+    if size >= 1_000_000:
+        return f"{size // 1_000_000}m"
+    return f"{size // 1_000}k"
+
+
+class ChunkTimer:
+    """Measures the actual wall-clock time of each full N-record chunk as
+    records stream through — one independent series per size in CHUNK_SIZES."""
+
+    def __init__(self, start: float):
+        self.times = {size: [] for size in CHUNK_SIZES}
+        self.chunk_starts = {size: start for size in CHUNK_SIZES}
+        self.boundaries = {size: size for size in CHUNK_SIZES}
+
+    def update(self, processed: int):
+        for size in CHUNK_SIZES:
+            if processed >= self.boundaries[size]:
+                now = time.monotonic()
+                self.times[size].append(now - self.chunk_starts[size])
+                self.chunk_starts[size] = now
+                self.boundaries[size] += size
+
+
+def record_step_timing(phase: str, label: str, seconds: float):
+    TIMINGS.setdefault(phase, {"steps": []})["steps"].append((label, seconds))
+
+
+def record_phase_timing(phase: str, total: float, count=0, unit="", chunk_times=None):
+    """Store a phase's total runtime and, for record-streaming phases, the
+    record count and the measured chunk times ({size: [seconds, ...]})."""
+    entry = TIMINGS.setdefault(phase, {"steps": []})
+    entry["total"] = total
+    entry["count"] = count
+    entry["unit"] = unit
+    entry["chunk_times"] = chunk_times or {}
+
+
+def print_timing_report():
+    if not TIMINGS:
+        return
+    print()
+    print("=== Timing Report ===")
+    for phase in ALL_PHASES:
+        entry = TIMINGS.get(phase)
+        if entry is None:
+            continue
+        print()
+        print(f"{phase} phase:")
+        for label, seconds in entry["steps"]:
+            print(f"  {label}: {format_duration(seconds)}")
+        total = entry.get("total")
+        if total is None:
+            continue
+        count, unit = entry.get("count", 0), entry.get("unit", "")
+        if count and unit:
+            print(f"  Total: {format_duration(total)} ({count:,} {unit}s)")
+            print(f"  Average per {unit}: {total / count * 1000:.2f} ms")
+        else:
+            print(f"  Total: {format_duration(total)}")
+        chunk_times = entry.get("chunk_times") or {}
+        for size in sorted(chunk_times):
+            times = chunk_times[size]
+            if not times:
+                continue
+            avg = sum(times) / len(times)
+            print(
+                f"  Per {format_chunk_size(size)} {unit}s (measured): "
+                f"avg {format_duration(avg)}, "
+                f"fastest {format_duration(min(times))}, "
+                f"slowest {format_duration(max(times))} "
+                f"({len(times)} full chunks)",
+            )
+
+
 def parse_window(args):
     now = datetime.now(timezone.utc)
 
@@ -361,9 +452,12 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
         return
 
     print("=== Phase 1: Config ===")
+    phase_start = time.monotonic()
 
     search_body = {"task_ids": task_ids} if task_ids else {}
+    step_start = time.monotonic()
     tasks = shield_paginate("/api/v2/tasks/search", search_body, "count", "tasks")
+    record_step_timing("config", "Fetch tasks", time.monotonic() - step_start)
     print(f"  Fetched {len(tasks)} tasks")
 
     if task_ids:
@@ -373,6 +467,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
         if missing:
             print(f"  WARNING: task ids not found in Shield: {', '.join(missing)}")
 
+    step_start = time.monotonic()
     default_rules = shield_get("/api/v2/default_rules")
 
     if task_ids:
@@ -410,12 +505,15 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     for rule in archived_rules:
         rule["archived"] = True
     all_rules = default_rules + task_rules + archived_rules
+    record_step_timing("config", "Fetch rules", time.monotonic() - step_start)
     print(
         f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped "
         f"+ {len(archived_rules)} archived rules",
     )
 
+    step_start = time.monotonic()
     resp = engine_post("/api/v1/migration/rules/bulk", {"rules": all_rules})
+    record_step_timing("config", "Insert rules", time.monotonic() - step_start)
     inserted = len(resp.get("rules", []))
     print(
         f"  Rules: "
@@ -426,6 +524,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     # Strip the embedded rules array before sending tasks — links are sent
     # separately below so the Engine endpoint does NOT auto-link rules on insert.
     task_rows = [{k: v for k, v in t.items() if k != "rules"} for t in tasks]
+    step_start = time.monotonic()
     resp = engine_post(
         "/api/v1/migration/tasks/bulk",
         {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
@@ -434,6 +533,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     ckpt.record_migrated_tasks(
         [t["id"] for t in inserted_tasks if t.get("id")],
     )
+    record_step_timing("config", "Insert tasks", time.monotonic() - step_start)
     inserted = len(inserted_tasks)
     print(
         f"  Tasks: "
@@ -453,9 +553,15 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
                     "enabled": rule_link.get("enabled", True),
                 },
             )
+    step_start = time.monotonic()
     resp = engine_post(
         "/api/v1/migration/task_rule_links/bulk",
         {"task_to_rule_links": links},
+    )
+    record_step_timing(
+        "config",
+        "Insert task-rule links",
+        time.monotonic() - step_start,
     )
     inserted = len(resp.get("task_to_rule_links", []))
     print(
@@ -465,6 +571,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     )
 
     ckpt.phase_done("config")
+    record_phase_timing("config", time.monotonic() - phase_start)
     print("=== Phase 1: Complete ===")
     print()
 
@@ -508,6 +615,9 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     inserted = 0
     skipped = 0
     wanted_tasks = set(task_ids) if task_ids else None
+    phase_start = time.monotonic()
+    processed_this_run = 0
+    chunk_timer = ChunkTimer(phase_start)
 
     while True:
         fetch_params = {
@@ -546,6 +656,8 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             )
 
         processed += len(batch)
+        processed_this_run += len(batch)
+        chunk_timer.update(processed_this_run)
         page += 1
         ckpt.update_inference_page(page)  # checkpoint: next page to fetch on resume
         pct = processed / total_count * 100 if total_count else 0
@@ -560,6 +672,13 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             break
 
     ckpt.phase_done("inferences")
+    record_phase_timing(
+        "inferences",
+        time.monotonic() - phase_start,
+        processed_this_run,
+        "inference",
+        chunk_timer.times,
+    )
     print()
     print(f"Total Inferences Inserted: {inserted:,}")
     print(f"Total Inferences Skipped: {skipped:,}")
@@ -591,6 +710,9 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     processed = start_page * SHIELD_PAGE_SIZE
     inserted = 0
     skipped = 0
+    phase_start = time.monotonic()
+    processed_this_run = 0
+    chunk_timer = ChunkTimer(phase_start)
 
     while True:
         fetch_params = {
@@ -614,6 +736,8 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
         skipped += page_skipped
 
         processed += len(batch)
+        processed_this_run += len(batch)
+        chunk_timer.update(processed_this_run)
         page += 1
         ckpt.update_feedback_page(page)
         print(
@@ -625,6 +749,13 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             break
 
     ckpt.phase_done("feedback")
+    record_phase_timing(
+        "feedback",
+        time.monotonic() - phase_start,
+        processed_this_run,
+        "feedback record",
+        chunk_timer.times,
+    )
     print()
     print(f"Total Feedback Inserted: {inserted:,}")
     print(f"Total Feedback Skipped: {skipped:,}")
@@ -801,6 +932,11 @@ def main():
         metavar="STATE_FILE",
         help="Path to a migration_state_*.json file to resume from",
     )
+    parser.add_argument(
+        "--timing",
+        action="store_true",
+        help="Print a timing report at the end of the run",
+    )
     args = parser.parse_args()
 
     # Require a window start unless resuming (then it comes from the checkpoint).
@@ -861,6 +997,9 @@ def main():
         migrate_inferences(ckpt, from_dt, to_dt, task_ids)
     if "feedback" in phases:
         migrate_feedback(ckpt, from_dt, to_dt, task_ids)
+
+    if args.timing:
+        print_timing_report()
 
     print(f"\nMigration complete. State saved to: {ckpt.path}")
 
