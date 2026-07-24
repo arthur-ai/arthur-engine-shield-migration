@@ -102,11 +102,30 @@ def task_clause(where, params, task_ids):
     )
 
 
+def migrated_scope_clause(where, params, migrated_task_ids, taskless_inference_ids):
+    """Scope engine-side counts to the rows this migration actually inserted."""
+    conditions = []
+    scope_params = {}
+    if migrated_task_ids:
+        conditions.append("i.task_id = ANY(:migrated_task_ids)")
+        scope_params["migrated_task_ids"] = migrated_task_ids
+    if taskless_inference_ids:
+        conditions.append("i.id = ANY(:taskless_inference_ids)")
+        scope_params["taskless_inference_ids"] = taskless_inference_ids
+    if not conditions:
+        return where, params
+    return (
+        and_clause(where, "(" + " OR ".join(conditions) + ")"),
+        {**params, **scope_params},
+    )
+
+
 def count(conn, table, where="", params=None):
     params = params or {}
-    stmt = text(f"SELECT COUNT(*) FROM {table} {where}")
+    sql = f"SELECT COUNT(*) FROM {table} {where}"
+    stmt = text(sql)
     for key, value in params.items():
-        if isinstance(value, list):
+        if isinstance(value, list) and f"ANY(:{key})" not in sql:
             stmt = stmt.bindparams(bindparam(key, expanding=True))
     return conn.execute(stmt, params).scalar_one()
 
@@ -116,7 +135,16 @@ def compare(label, shield_n, engine_n):
     return f"  {status:<10} {label:<28} shield={fmt(shield_n)}  engine={fmt(engine_n)}"
 
 
-def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None):
+def verify(
+    shield: Engine,
+    engine: Engine,
+    from_dt,
+    to_dt,
+    org_id,
+    task_ids=None,
+    migrated_task_ids=None,
+    taskless_inference_ids=None,
+):
     lines = []
 
     window_label = "all time"
@@ -181,6 +209,12 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None
                 task_ids,
             )
             e_where, e_params = task_clause(parent_where, parent_params, task_ids)
+            e_where, e_params = migrated_scope_clause(
+                e_where,
+                e_params,
+                migrated_task_ids,
+                taskless_inference_ids,
+            )
             s = count(sc, f"{from_sql} {archived_join}", s_where, s_params)
             e = count(ec, from_sql, e_where, e_params)
             all_match = all_match and s == e
@@ -231,11 +265,17 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None
                 task_ids,
             )
             s = count(sc, f"{shield_from_sql} {archived_join}", s_where, s_params)
-            if task_ids:
+            if task_ids or migrated_task_ids or taskless_inference_ids:
                 e_where, e_params = task_clause(
                     and_clause(rr_where, "rr.org_id = :org_id"),
                     {**rr_params, "org_id": org_id},
                     task_ids,
+                )
+                e_where, e_params = migrated_scope_clause(
+                    e_where,
+                    e_params,
+                    migrated_task_ids,
+                    taskless_inference_ids,
                 )
                 e = count(ec, shield_from_sql, e_where, e_params)
             else:
@@ -265,7 +305,7 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None
             s_where,
             s_params,
         )
-        if task_ids:
+        if task_ids or migrated_task_ids or taskless_inference_ids:
             fb_engine_where, fb_engine_params = window_clause(
                 from_dt,
                 to_dt,
@@ -275,6 +315,12 @@ def verify(shield: Engine, engine: Engine, from_dt, to_dt, org_id, task_ids=None
                 and_clause(fb_engine_where, "f.org_id = :org_id"),
                 {**fb_engine_params, "org_id": org_id},
                 task_ids,
+            )
+            e_where, e_params = migrated_scope_clause(
+                e_where,
+                e_params,
+                migrated_task_ids,
+                taskless_inference_ids,
             )
             e = count(
                 ec,
@@ -336,12 +382,23 @@ def main():
     from_dt = datetime.fromisoformat(stored_from) if stored_from else None
     to_dt = datetime.fromisoformat(stored_to) if stored_to else None
     task_ids = sorted(state.get("task_ids") or []) or None
+    migrated_task_ids = state.get("migrated_task_ids") or None
+    taskless_inference_ids = state.get("migrated_taskless_inference_ids") or None
 
     org_id = os.environ["ENGINE_ORG_ID"]
     shield = get_engine("SHIELD")
     engine = get_engine("ENGINE")
 
-    ok = verify(shield, engine, from_dt, to_dt, org_id, task_ids)
+    ok = verify(
+        shield,
+        engine,
+        from_dt,
+        to_dt,
+        org_id,
+        task_ids,
+        migrated_task_ids,
+        taskless_inference_ids,
+    )
     raise SystemExit(0 if ok else 1)
 
 
