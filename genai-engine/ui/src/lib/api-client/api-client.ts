@@ -2465,6 +2465,11 @@ export interface DatasetVersionRowResponse {
    * @format uuid
    */
   id: string;
+  /**
+   * Trace Id
+   * ID of the trace this row was extracted from, if the row originated from a trace.
+   */
+  trace_id?: string | null;
 }
 
 export type DeactivateApiKeyAuthApiKeysDeactivateApiKeyIdDeleteData = ApiKeyResponse;
@@ -7087,6 +7092,11 @@ export interface NewDatasetVersionRowRequest {
    * Optional ID for the row (used for synthetic data generation).
    */
   id?: string | null;
+  /**
+   * Trace Id
+   * ID of the trace this row was extracted from, if the row originated from a trace.
+   */
+  trace_id?: string | null;
 }
 
 /**
@@ -10206,6 +10216,10 @@ export interface ResponseValidationRequest {
    */
   response: string;
 }
+
+export type RestoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePostData = DatasetVersionResponse;
+
+export type RestoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePostError = HTTPValidationError;
 
 export type RotateSecretsApiV1SecretsRotationPostData = any;
 
@@ -13705,7 +13719,7 @@ export class HttpClient<SecurityDataType = unknown> {
 
 /**
  * @title Arthur GenAI Engine
- * @version 2.1.719
+ * @version 2.1.729
  */
 export class Api<SecurityDataType extends unknown> extends HttpClient<SecurityDataType> {
   api = {
@@ -17054,6 +17068,31 @@ export class Api<SecurityDataType extends unknown> extends HttpClient<SecurityDa
         RerunContinuousEvalApiV1ContinuousEvalsResultsRunIdRerunPostError
       >({
         path: `/api/v1/continuous_evals/results/${runId}/rerun`,
+        method: "POST",
+        secure: true,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Reinstate a previous dataset version by copying its rows into a new latest version.
+     *
+     * @tags Datasets
+     * @name RestoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePost
+     * @summary Restore Dataset Version
+     * @request POST:/api/v2/datasets/{dataset_id}/versions/{version_number}/restore
+     * @secure
+     */
+    restoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePost: (
+      datasetId: string,
+      versionNumber: number,
+      params: RequestParams = {}
+    ) =>
+      this.request<
+        RestoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePostData,
+        RestoreDatasetVersionApiV2DatasetsDatasetIdVersionsVersionNumberRestorePostError
+      >({
+        path: `/api/v2/datasets/${datasetId}/versions/${versionNumber}/restore`,
         method: "POST",
         secure: true,
         format: "json",

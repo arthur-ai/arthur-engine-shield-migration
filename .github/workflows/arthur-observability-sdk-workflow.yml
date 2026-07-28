@@ -176,6 +176,8 @@ jobs:
 
   claude-code-review:
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate' && github.event.pull_request.user.login != 'renovate[bot]'
+    # Binds the environment-scoped ANTHROPIC_API_KEY; see claude-code-review.yml.
+    environment: shared-protected-branch-secrets
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:

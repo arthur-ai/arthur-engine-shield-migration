@@ -5,11 +5,16 @@ name: Scheduled image vulnerability scan
 # gates anything. Findings land in Security -> Code scanning; SBOM + per-image justification
 # reports are uploaded as workflow artifacts.
 #
-# Tag selection: by default we scan the latest `-dev` image, derived from the `version` file via
-# the set-version action. The workflow runs on the `dev` default branch, so set-version appends
-# `-dev` (e.g. 2.1.657 -> arthurplatform/genai-engine-cpu:2.1.657-dev) — the most recent dev
-# build, addressed by a version-pinned tag rather than the floating `latest-dev`. Override via
-# the `tag` input to scan a specific tag (e.g. a production release `2.1.656`).
+# Tag selection differs from upstream arthur-engine because this fork's default branch is
+# `main`, not `dev`. Upstream runs on `dev`, where set-version appends `-dev` and the scan
+# therefore targets the latest dev build. Here set-version leaves VERSION bare (e.g. 2.1.732)
+# and no such plain tag is published — upstream only pushes plain tags from its own `main`,
+# which lags. So the upstream images are scanned at `<version>-dev`, which is the build this
+# fork's code actually corresponds to. Override with the `tag` input to scan a specific tag
+# (e.g. a production release `2.1.656`).
+#
+# The migration image this repo publishes itself (build-shield-migration-gpu.yml) is pinned to
+# `latest` instead: its version tags only exist once that workflow has run for a given version.
 
 on:
   schedule:
@@ -18,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to scan (default: latest -dev image from the version file)"
+        description: "Tag for the upstream arthurplatform images (default: <version>-dev)"
         type: string
         required: false
         default: ""
@@ -42,17 +47,40 @@ jobs:
           - { image: arthurplatform/genai-engine-models-s3, slug: models-s3 }
           - { image: arthurplatform/genai-engine-models-fs, slug: models-fs }
           - { image: arthurplatform/genai-engine-models-gcs, slug: models-gcs }
+          # Published by this repo, not upstream — pinned tag, see header note.
+          - {
+              image: arthurplatform/genai-engine-shield-migration-gpu,
+              slug: shield-migration-gpu,
+              tag: latest,
+            }
     steps:
+      # The model images are ~7GB and the GPU images ~10GB. A stock runner does not have
+      # room to both pull and export them, which previously failed every large image in
+      # this matrix with "no space left on device". Reclaim first (same action the release
+      # build uses) so Trivy has working room.
+      - uses: mathio/gha-cleanup@v1
+        with:
+          remove-browsers: true
+          verbose: true
       - uses: actions/checkout@v5
       - uses: ./.github/workflows/composite-actions/set-version
-      - name: Resolve image tag (latest -dev image from the version file)
+      - name: Resolve image tag
         id: tag
         shell: bash
+        env:
+          OVERRIDE: ${{ github.event.inputs.tag }}
+          PINNED: ${{ matrix.tag }}
         run: |
           set -euo pipefail
-          OVERRIDE="${{ github.event.inputs.tag }}"
-          # set-version exports VERSION = <version>-dev on the dev default branch.
-          TAG="${OVERRIDE:-${{ env.VERSION }}}"
+          # Precedence: per-image pinned tag > manual override > <version>-dev.
+          # set-version already appends `-dev` when the ref is not `main`, so strip it before
+          # re-appending — otherwise a manual dispatch from a branch asks for `X-dev-dev`.
+          BASE="${VERSION%-dev}"
+          if [ -n "${PINNED}" ]; then
+            TAG="${PINNED}"
+          else
+            TAG="${OVERRIDE:-${BASE}-dev}"
+          fi
           echo "Scanning tag: ${TAG}"
           echo "value=${TAG}" >> "$GITHUB_OUTPUT"
       - name: Scan image & generate justification docs

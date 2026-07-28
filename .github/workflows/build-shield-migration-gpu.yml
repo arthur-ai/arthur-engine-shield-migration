@@ -1,0 +1,120 @@
+name: Build & push shield-migration GPU image
+
+# Publishes this fork's GenAI Engine GPU image to a migration-scoped Docker Hub repo:
+#   arthurplatform/genai-engine-shield-migration-gpu
+#
+# Deliberately a separate repo from the official `arthurplatform/genai-engine-gpu` so
+# migration builds never clobber released images. The main CI workflow
+# (arthur-engine-workflow.yml) only builds images on 'Increment arthur-engine version'
+# commits, which are produced by version-workflow.yml on the `dev` branch — a branch this
+# fork does not have. So that job never fires here; this workflow is the one that does.
+#
+# Tags pushed: <version from ./version> and `latest`.
+# The image is scanned with Trivy afterwards (advisory) — see composite-actions/vuln-report.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "genai-engine/**"
+      - "version"
+      - ".github/workflows/build-shield-migration-gpu.yml"
+      - ".github/workflows/composite-actions/vuln-report/**"
+  workflow_dispatch:
+    inputs:
+      push_latest:
+        description: "Also move the `latest` tag to this build"
+        type: boolean
+        required: false
+        default: true
+
+# Only one GPU build at a time; a newer push supersedes an in-flight build.
+concurrency:
+  group: shield-migration-gpu
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  build-and-push:
+    environment: shared-protected-branch-secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # The GPU image is ~10GB; reclaim runner disk before building or the export
+      # step dies with "no space left on device". Same action the release build uses.
+      - uses: mathio/gha-cleanup@v1
+        with:
+          remove-browsers: true
+          verbose: true
+
+      - uses: actions/checkout@v5
+      - uses: ./.github/workflows/composite-actions/setup-git
+        with:
+          safe-directory: ${{ runner.workspace }}
+      - uses: ./.github/workflows/composite-actions/set-version
+
+      - name: Resolve image tags
+        id: tags
+        shell: bash
+        env:
+          # workflow_dispatch sends a string; push sends nothing. Default to tagging latest.
+          PUSH_LATEST: ${{ github.event_name != 'workflow_dispatch' || inputs.push_latest }}
+          IMAGE: arthurplatform/genai-engine-shield-migration-gpu
+        run: |
+          set -euo pipefail
+          {
+            echo "list<<EOF"
+            echo "${IMAGE}:${VERSION}"
+            if [ "${PUSH_LATEST}" = "true" ]; then echo "${IMAGE}:latest"; fi
+            echo "EOF"
+            echo "scan=${IMAGE}:${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.1.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_OSS_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_OSS_TOKEN }}
+
+      # GITLAB_UNIFY_FRONTEND_TOKEN is REQUIRED — the ui-build stage exits 1 without it
+      # (private @arthur/* packages). The analytics/anti-abuse keys are optional; when
+      # blank the corresponding UI feature simply stays disabled.
+      # ENABLE_TELEMETRY stays false: this is a migration fork, not a released build.
+      - name: Build and push GPU image
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: "{{defaultContext}}:genai-engine"
+          file: dockerfile
+          build-args: |
+            TORCH_DEVICE=gpu
+            ENABLE_TELEMETRY=false
+            GITLAB_UNIFY_FRONTEND_TOKEN=${{ secrets.GITLAB_UNIFY_FRONTEND_TOKEN }}
+            AMPLITUDE_API_KEY=${{ secrets.AMPLITUDE_API_KEY }}
+            VITE_AMPLITUDE_DEPLOYMENT_KEY=${{ secrets.AMPLITUDE_DEPLOYMENT_KEY }}
+            VITE_AMPLITUDE_REPLAY_SAMPLE_RATE=${{ vars.AMPLITUDE_REPLAY_SAMPLE_RATE }}
+            RECAPTCHA_ENTERPRISE_SITE_KEY=${{ secrets.RECAPTCHA_ENTERPRISE_SITE_KEY }}
+          tags: ${{ steps.tags.outputs.list }}
+          push: true
+          platforms: linux/amd64
+          # SBOM attestation only. Do NOT add `provenance: mode=max` — the build-args above
+          # carry secrets and mode=max records build-arg values into the attestation on a
+          # public image.
+          sbom: true
+
+      # Advisory only — a CVE must never block publishing the migration image.
+      - name: Scan image & generate justification docs
+        continue-on-error: true
+        uses: ./.github/workflows/composite-actions/vuln-report
+        with:
+          image: ${{ steps.tags.outputs.scan }}
+          slug: shield-migration-gpu
+          dockerhub-username: ${{ secrets.DOCKERHUB_ENTERPRISE_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_ENTERPRISE_TOKEN }}
