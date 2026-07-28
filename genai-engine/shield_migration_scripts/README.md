@@ -316,9 +316,11 @@ vs Engine (target). Engine-side counts are scoped to the IDs the run recorded
 so data in the Engine that the run didn't insert never affects the comparison.
 Each row prints `shield=… engine=…` with a ✓ when they match and ✗ when they
 don't. A config section verifies every migrated task, rule, and task–rule link
-exists in the Engine; a final section checks that no org-scoped rows were
-written to the Engine without an `org_id`. Exits `0` if everything matches,
-`1` otherwise.
+exists in the Engine; a rule-result-details section compares the full detail
+tree (`rule_result_details` plus hallucination claims, PII entities, keyword
+matches, regex matches, and toxicity scores); a final section checks that no
+org-scoped rows were written to the Engine without an `org_id`. Exits `0` if
+everything matches, `1` otherwise.
 
 ### Setup
 
@@ -411,6 +413,14 @@ Inferences
 Validation (rule) results
   ✓          prompt_rule_results          shield=1,204,556  engine=1,204,556
   ✓          response_rule_results        shield=1,150,003  engine=1,150,003
+
+Rule result details
+  ✓          rule_result_details          shield=2,354,559  engine=2,354,559
+  ✓          hallucination_claims         shield=88,411  engine=88,411
+  ✓          pii_entities                 shield=41,006  engine=41,006
+  ✓          keyword_matches              shield=12,733  engine=12,733
+  ✓          regex_matches                shield=8,290  engine=8,290
+  ✓          toxicity_scores              shield=2,354,559  engine=2,354,559
 
 Feedback
   ✓          inference_feedback           shield=9,812  engine=9,812
