@@ -2,14 +2,6 @@ The intention of this changelog is to document API changes as they happen to eff
 
 ---
 
-# 07/10/2026
-- **CHANGE** for **URL**: /api/v1/migration/inferences/{inference_id}  endpoint added
-- **CHANGE** for **URL**: /api/v1/migration/tasks/{task_id}  endpoint added
-- **CHANGE** for **URL**: /api/v1/migration/tasks/{task_id}/feedback  endpoint added
-- **CHANGE** for **URL**: /api/v1/migration/tasks/{task_id}/inferences  endpoint added
-- **CHANGE** for **URL**: /api/v1/migration/tasks/{task_id}/rule_results  endpoint added
-- **CHANGE** for **URL**: /api/v1/migration/tasks/{task_id}/rules  endpoint added
-
 # 07/06/2026
 - **CHANGE** for **URL**: /api/v1/migration/feedback/bulk  endpoint added
 - **CHANGE** for **URL**: /api/v1/migration/inferences/bulk  endpoint added

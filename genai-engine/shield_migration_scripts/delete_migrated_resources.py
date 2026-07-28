@@ -1,13 +1,22 @@
 # delete_migrated_resources.py
 """
 Deletes all Engine resources associated with the tasks that a specific
-migration inserted. Reads the migrated_task_ids recorded in a migration save
-file and, for each task, deletes its rule results, feedback, inferences,
-task-to-rule links (plus any rules left unlinked from every task as a result),
-and finally the task itself via the Engine migration API.
+migration inserted, directly against the Engine PostgreSQL database (no API).
+Reads the migrated_task_ids recorded in a migration save file and deletes each
+task's inference subtree in FK-safe order, in batches with a commit per batch,
+then removes rule links, orphaned rules, and the tasks themselves.
+
+Engine DB connection (same env vars as verify_counts.py):
+    ENGINE_POSTGRES_USER
+    ENGINE_POSTGRES_PASSWORD
+    ENGINE_POSTGRES_URL
+    ENGINE_POSTGRES_PORT
+    ENGINE_POSTGRES_DB
+    ENGINE_POSTGRES_USE_SSL         (optional, "true"/"false", default false)
+    ENGINE_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
 
 Usage:
-    python delete_migrated_resources.py --save-file migration_states/migration_state_2026-01-09_to_2026-07-08.json
+    python delete_migrated_resources.py --save-file migration_states/migration_state_2026-01-23_to_2026-07-22.json
     python delete_migrated_resources.py --save-file <path> --execute
 """
 
@@ -15,64 +24,44 @@ import argparse
 import json
 import os
 import sys
-import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
 from dotenv import load_dotenv
+from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy.engine import Connection, Engine
 
 load_dotenv()
 
-ENGINE_BASE_URL = os.getenv("ENGINE_BASE_URL")
-ENGINE_API_KEY = os.getenv("ENGINE_API_KEY")
+BATCH_SIZE = int(os.getenv("MIGRATION_SQL_BATCH_SIZE", default=25000))
+SQL_WORKERS = int(os.getenv("MIGRATION_SQL_WORKERS", default=4))
 
-MIGRATION_TIMEOUT = int(
-    os.getenv("MIGRATION_TIMEOUT", default=30),
-)  # seconds for all HTTP calls
-
-MAX_WORKERS = int(os.getenv("MIGRATION_MAX_WORKERS", default=10))
-MAX_ATTEMPTS = 6
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-
-# Per-task child resources, in FK-safe deletion order. Safe to run concurrently
-# across tasks since none of these rows are shared between tasks.
-TASK_RESOURCE_STEPS = [
-    ("rule results", "/api/v1/migration/tasks/{task_id}/rule_results"),
-    ("feedback", "/api/v1/migration/tasks/{task_id}/feedback"),
-    ("inferences", "/api/v1/migration/tasks/{task_id}/inferences"),
-]
-
-# The rules endpoint deletes rules left unlinked from every task, which races
-# when tasks sharing a rule are deleted concurrently — run these sequentially.
-TASK_FINAL_STEPS = [
-    ("rules", "/api/v1/migration/tasks/{task_id}/rules"),
-    ("task", "/api/v1/migration/tasks/{task_id}"),
+DETAIL_CHILD_TABLES = [
+    "hallucination_claims",
+    "pii_entities",
+    "keyword_matches",
+    "regex_matches",
+    "toxicity_scores",
 ]
 
 
-def engine_delete(path: str) -> None:
-    last_error = None
-    for attempt in range(MAX_ATTEMPTS):
-        try:
-            response = requests.delete(
-                f"{ENGINE_BASE_URL}{path}",
-                headers={
-                    "Authorization": f"Bearer {ENGINE_API_KEY}",
-                },
-                timeout=MIGRATION_TIMEOUT,
-            )
-            if response.status_code not in RETRYABLE_STATUS_CODES:
-                response.raise_for_status()
-                return
-            last_error = f"{response.status_code} {response.text}"
-        except requests.HTTPError:
-            raise
-        except requests.RequestException as e:
-            last_error = str(e)
-        if attempt < MAX_ATTEMPTS - 1:
-            time.sleep(min(2**attempt, 30))
-    raise Exception(
-        f"DELETE {path} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+def get_engine() -> Engine:
+    user = os.environ["ENGINE_POSTGRES_USER"]
+    password = os.environ["ENGINE_POSTGRES_PASSWORD"]
+    host = os.environ["ENGINE_POSTGRES_URL"]
+    port = os.environ["ENGINE_POSTGRES_PORT"]
+    db_name = os.environ["ENGINE_POSTGRES_DB"]
+
+    params = {}
+    if os.getenv("ENGINE_POSTGRES_USE_SSL", "false").lower() == "true":
+        params["sslmode"] = "require"
+        root_cert = os.getenv("ENGINE_POSTGRES_SSL_ROOT_CERT")
+        if root_cert:
+            params["sslrootcert"] = root_cert
+    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+
+    return create_engine(
+        f"postgresql://{user}:{urllib.parse.quote_plus(password)}@{host}:{port}/{db_name}{query}",
     )
 
 
@@ -84,41 +73,158 @@ def load_state(save_file: str) -> dict:
         return json.load(f)
 
 
-def delete_task_resources(task_id: str) -> None:
-    for _, path_template in TASK_RESOURCE_STEPS:
-        engine_delete(path_template.format(task_id=task_id))
+def select_ids(conn: Connection, sql: str, **params) -> list:
+    statement = text(sql)
+    for name, value in params.items():
+        if isinstance(value, list):
+            statement = statement.bindparams(bindparam(name, expanding=True))
+    return list(conn.execute(statement, params).scalars())
 
 
-def delete_task_final(task_id: str) -> None:
-    for _, path_template in TASK_FINAL_STEPS:
-        engine_delete(path_template.format(task_id=task_id))
+def delete_by_ids(conn: Connection, table: str, column: str, ids: list) -> int:
+    if not ids:
+        return 0
+    statement = text(f"DELETE FROM {table} WHERE {column} IN :ids").bindparams(
+        bindparam("ids", expanding=True),
+    )
+    return conn.execute(statement, {"ids": ids}).rowcount
 
 
-def delete_taskless_inference(inference_id: str) -> None:
-    engine_delete(f"/api/v1/migration/inferences/{inference_id}")
+PROMPT_PATH = (
+    "prompt_rule_results r, inference_prompts p "
+    "WHERE d.prompt_rule_result_id = r.id "
+    "AND r.inference_prompt_id = p.id AND p.inference_id = ANY(:ids)"
+)
+RESPONSE_PATH = (
+    "response_rule_results r, inference_responses p "
+    "WHERE d.response_rule_result_id = r.id "
+    "AND r.inference_response_id = p.id AND p.inference_id = ANY(:ids)"
+)
 
 
-def print_progress(label: str, done: int, total: int) -> None:
-    # Print roughly every 10% (and on completion), not on every item.
-    step = max(1, total // 10)
-    if done % step == 0 or done == total:
-        print(f"  {label}: {done}/{total} ({done * 100 // total}%)", flush=True)
+def delete_inference_batch(conn: Connection, inference_ids: list) -> None:
+    ids = {"ids": inference_ids}
+    for child in DETAIL_CHILD_TABLES:
+        for path in (PROMPT_PATH, RESPONSE_PATH):
+            conn.execute(
+                text(
+                    f"DELETE FROM {child} t USING rule_result_details d, {path} "
+                    f"AND t.rule_result_detail_id = d.id",
+                ),
+                ids,
+            )
+    for path in (PROMPT_PATH, RESPONSE_PATH):
+        conn.execute(
+            text(f"DELETE FROM rule_result_details d USING {path}"),
+            ids,
+        )
+    conn.execute(
+        text(
+            "DELETE FROM prompt_rule_results r USING inference_prompts p "
+            "WHERE r.inference_prompt_id = p.id AND p.inference_id = ANY(:ids)",
+        ),
+        ids,
+    )
+    conn.execute(
+        text(
+            "DELETE FROM response_rule_results r USING inference_responses p "
+            "WHERE r.inference_response_id = p.id AND p.inference_id = ANY(:ids)",
+        ),
+        ids,
+    )
+    conn.execute(
+        text("DELETE FROM inference_feedback WHERE inference_id = ANY(:ids)"),
+        ids,
+    )
+    conn.execute(
+        text(
+            "DELETE FROM inference_prompt_contents c USING inference_prompts p "
+            "WHERE c.inference_prompt_id = p.id AND p.inference_id = ANY(:ids)",
+        ),
+        ids,
+    )
+    conn.execute(
+        text(
+            "DELETE FROM inference_response_contents c USING inference_responses p "
+            "WHERE c.inference_response_id = p.id AND p.inference_id = ANY(:ids)",
+        ),
+        ids,
+    )
+    conn.execute(
+        text("DELETE FROM inference_prompts WHERE inference_id = ANY(:ids)"),
+        ids,
+    )
+    conn.execute(
+        text("DELETE FROM inference_responses WHERE inference_id = ANY(:ids)"),
+        ids,
+    )
+    conn.execute(text("DELETE FROM inferences WHERE id = ANY(:ids)"), ids)
 
 
-def run_parallel(label: str, items: list, fn) -> None:
-    if not items:
-        return
-    completed = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(fn, item) for item in items]
+def delete_batch_transaction(engine: Engine, inference_ids: list) -> int:
+    with engine.begin() as conn:
+        delete_inference_batch(conn, inference_ids)
+    return len(inference_ids)
+
+
+def delete_task_inferences(engine: Engine, task_ids: list) -> int:
+    with engine.connect() as conn:
+        all_ids = select_ids(
+            conn,
+            "SELECT id FROM inferences WHERE task_id IN :ids",
+            ids=task_ids,
+        )
+    batches = [
+        all_ids[start : start + BATCH_SIZE]
+        for start in range(0, len(all_ids), BATCH_SIZE)
+    ]
+    deleted = 0
+    with ThreadPoolExecutor(max_workers=SQL_WORKERS) as executor:
+        futures = [
+            executor.submit(delete_batch_transaction, engine, batch)
+            for batch in batches
+        ]
         for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception:
-                executor.shutdown(cancel_futures=True)
-                raise
-            completed += 1
-            print_progress(label, completed, len(items))
+            deleted += future.result()
+            print(f"  Inferences: {deleted}/{len(all_ids)} deleted", flush=True)
+    return deleted
+
+
+def delete_taskless_inferences(engine: Engine, inference_ids: list) -> None:
+    for start in range(0, len(inference_ids), BATCH_SIZE):
+        delete_batch_transaction(engine, inference_ids[start : start + BATCH_SIZE])
+
+
+def delete_rules_and_tasks(engine: Engine, task_ids: list, rule_ids: list) -> None:
+    with engine.begin() as conn:
+        linked_rule_ids = select_ids(
+            conn,
+            "SELECT DISTINCT rule_id FROM tasks_to_rules WHERE task_id IN :ids",
+            ids=task_ids,
+        )
+        delete_by_ids(conn, "tasks_to_rules", "task_id", task_ids)
+        still_linked = (
+            set(
+                select_ids(
+                    conn,
+                    "SELECT DISTINCT rule_id FROM tasks_to_rules WHERE rule_id IN :ids",
+                    ids=linked_rule_ids,
+                ),
+            )
+            if linked_rule_ids
+            else set()
+        )
+        orphaned_rule_ids = [r for r in linked_rule_ids if r not in still_linked]
+        doomed_rule_ids = list(set(orphaned_rule_ids) | set(rule_ids))
+        delete_by_ids(conn, "tasks_to_rules", "rule_id", doomed_rule_ids)
+        delete_by_ids(conn, "rule_data", "rule_id", doomed_rule_ids)
+        delete_by_ids(conn, "rules", "id", doomed_rule_ids)
+        delete_by_ids(conn, "tasks", "id", task_ids)
+        print(
+            f"  Rules: {len(doomed_rule_ids)} rule(s) deleted, "
+            f"{len(task_ids)} task(s) deleted",
+            flush=True,
+        )
 
 
 def main():
@@ -138,37 +244,39 @@ def main():
     state = load_state(args.save_file)
     task_ids = state.get("migrated_task_ids", [])
     taskless_inference_ids = state.get("migrated_taskless_inference_ids", [])
+    rule_ids = state.get("migrated_rule_ids", [])
 
-    if not task_ids and not taskless_inference_ids:
+    if not task_ids and not taskless_inference_ids and not rule_ids:
         print("Nothing recorded in the save file to delete.")
         return
 
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        inference_count = conn.execute(
+            text(
+                "SELECT count(*) FROM inferences WHERE task_id IN :ids",
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"ids": task_ids},
+        ).scalar()
+
     print(f"Found in {args.save_file}:")
-    print(f"  {len(task_ids)} task(s):")
-    for task_id in task_ids:
-        print(f"    {task_id}")
+    print(f"  {len(task_ids)} task(s) with {inference_count} inference(s)")
     print(f"  {len(taskless_inference_ids)} task-less inference(s)")
+    print(f"  {len(rule_ids)} migrated rule(s)")
 
     if not args.execute:
         print(
             "\nDry run — no resources deleted. Re-run with --execute to delete "
-            "the rule results, feedback, inferences, rules, and tasks listed "
-            "above, along with the task-less inferences.",
+            "the inference subtrees, rules, and tasks listed above directly "
+            "from the Engine database.",
         )
         return
 
     print("\nDeleting resources...")
-    run_parallel("Task resources", task_ids, delete_task_resources)
-
-    for i, task_id in enumerate(task_ids, start=1):
-        delete_task_final(task_id)
-        print_progress("Tasks", i, len(task_ids))
-
-    run_parallel(
-        "Task-less inferences",
-        taskless_inference_ids,
-        delete_taskless_inference,
-    )
+    delete_task_inferences(engine, task_ids)
+    delete_taskless_inferences(engine, taskless_inference_ids)
+    delete_rules_and_tasks(engine, task_ids, rule_ids)
 
     print(
         f"\nDone. Deleted resources for {len(task_ids)} task(s) "

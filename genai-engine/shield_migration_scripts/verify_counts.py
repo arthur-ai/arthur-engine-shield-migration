@@ -144,6 +144,7 @@ def verify(
     task_ids=None,
     migrated_task_ids=None,
     taskless_inference_ids=None,
+    migrated_rule_ids=None,
 ):
     lines = []
 
@@ -200,6 +201,48 @@ def verify(
     excluded = "(i.task_id IS NOT NULL AND COALESCE(t.archived, TRUE) = TRUE)"
 
     with shield.connect() as sc, engine.connect() as ec:
+        # ── Config (tasks / rules / links recorded in the save file) ────────
+        lines.append("Config (migrated IDs recorded in the save file)")
+        if migrated_task_ids:
+            e = count(
+                ec,
+                "tasks",
+                "WHERE id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            all_match = all_match and e == len(migrated_task_ids)
+            lines.append(compare("tasks", len(migrated_task_ids), e))
+            s = count(
+                sc,
+                "tasks_to_rules",
+                "WHERE task_id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            e = count(
+                ec,
+                "tasks_to_rules",
+                "WHERE task_id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            all_match = all_match and s == e
+            lines.append(compare("task_rule_links", s, e))
+        if migrated_rule_ids:
+            e = count(
+                ec,
+                "rules",
+                "WHERE id = ANY(:mids)",
+                {"mids": migrated_rule_ids},
+            )
+            all_match = all_match and e == len(migrated_rule_ids)
+            lines.append(compare("rules", len(migrated_rule_ids), e))
+        if not migrated_task_ids and not migrated_rule_ids:
+            lines.append("  (save file records no migrated task or rule IDs)")
+        archived_tasks_n = count(sc, "tasks", "WHERE archived")
+        lines.append(
+            f"\nShield tasks archived (not migrated): {fmt(archived_tasks_n)}",
+        )
+        lines.append("")
+
         # ── Inferences ──────────────────────────────────────────────────────
         lines.append("Inferences")
         for label, from_sql in inference_tables:
@@ -230,12 +273,8 @@ def verify(
             excluded_where,
             excluded_params,
         )
-        archived_tasks_n = count(sc, "tasks", "WHERE archived")
         lines.append(
-            f"\nShield tasks archived (not migrated): {fmt(archived_tasks_n)}",
-        )
-        lines.append(
-            f"Shield inferences referencing archived tasks"
+            f"\nShield inferences referencing archived tasks"
             f" (not migrated, excluded from the counts above): {fmt(excluded_n)}",
         )
         lines.append("")
@@ -384,6 +423,7 @@ def main():
     task_ids = sorted(state.get("task_ids") or []) or None
     migrated_task_ids = state.get("migrated_task_ids") or None
     taskless_inference_ids = state.get("migrated_taskless_inference_ids") or None
+    migrated_rule_ids = state.get("migrated_rule_ids") or None
 
     org_id = os.environ["ENGINE_ORG_ID"]
     shield = get_engine("SHIELD")
@@ -398,6 +438,7 @@ def main():
         task_ids,
         migrated_task_ids,
         taskless_inference_ids,
+        migrated_rule_ids,
     )
     raise SystemExit(0 if ok else 1)
 

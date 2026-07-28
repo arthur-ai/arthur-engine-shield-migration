@@ -351,6 +351,7 @@ class Checkpoint:
       inference_page          — next Shield inference page to fetch (starts at 0)
       feedback_page           — next Shield feedback page to fetch (starts at 0)
       migrated_task_ids       — task IDs inserted into the Engine (for cleanup)
+      migrated_rule_ids       — rule IDs inserted into the Engine (for cleanup)
       started_at / last_updated_at — ISO timestamps
     """
 
@@ -362,6 +363,7 @@ class Checkpoint:
             # Backfill keys added after this checkpoint was first written.
             self.state.setdefault("migrated_task_ids", [])
             self.state.setdefault("migrated_taskless_inference_ids", [])
+            self.state.setdefault("migrated_rule_ids", [])
             self.state.setdefault("task_ids", [])
         else:
             self.state = {
@@ -373,6 +375,7 @@ class Checkpoint:
                 "feedback_page": 0,
                 "migrated_task_ids": [],
                 "migrated_taskless_inference_ids": [],
+                "migrated_rule_ids": [],
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -415,6 +418,15 @@ class Checkpoint:
             if task_id not in existing:
                 self.state["migrated_task_ids"].append(task_id)
                 existing.add(task_id)
+        self._save()
+
+    def record_migrated_rules(self, rule_ids):
+        """Append newly inserted rule IDs, de-duped, preserving order."""
+        existing = set(self.state["migrated_rule_ids"])
+        for rule_id in rule_ids:
+            if rule_id not in existing:
+                self.state["migrated_rule_ids"].append(rule_id)
+                existing.add(rule_id)
         self._save()
 
     def record_taskless_inferences(self, inference_ids):
@@ -518,6 +530,9 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     step_start = time.monotonic()
     resp = engine_post("/api/v1/migration/rules/bulk", {"rules": all_rules})
     record_step_timing("config", "Insert rules", time.monotonic() - step_start)
+    ckpt.record_migrated_rules(
+        [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+    )
     inserted = len(resp.get("rules", []))
     print(
         f"  Rules: "
