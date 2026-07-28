@@ -202,6 +202,9 @@ either database directly. Work is split into three phases (`config`, `inferences
 | `SHIELD_PAGE_SIZE` | *(optional)* rows fetched per Shield page, default `4999`. Must be greater than 0 and less than 5000. |
 | `ENGINE_BATCH_SIZE` | *(optional)* inferences per POST to the Engine, default `500` |
 | `MIGRATION_TIMEOUT` | *(optional)* per-request HTTP timeout in seconds, default `30` |
+| `MIGRATION_MAX_WORKERS` | *(optional)* concurrent Engine POSTs, default `10` |
+| `MIGRATION_SHIELD_FETCH_WORKERS` | *(optional)* concurrent Shield page fetchers, default `3` |
+| `MIGRATION_PREFETCH_PAGES` | *(optional)* Shield pages buffered ahead of the Engine writers, default `10` |
 
 ### Usage
 
@@ -266,10 +269,10 @@ scope left off. Rolling back with `delete_migrated_resources.py` works the same
 as for a full run — pass that run's checkpoint file.
 
 The checkpoint file also records the IDs of every task the run migrated
-(`migrated_task_ids`) and of every migrated inference that has no task
-(`migrated_taskless_inference_ids`). These lists are what
-`delete_migrated_resources.py` uses to roll the migration back, so keep the
-checkpoint file around after a run completes.
+(`migrated_task_ids`), every rule it inserted (`migrated_rule_ids`), and every
+migrated inference that has no task (`migrated_taskless_inference_ids`). These
+lists are what `delete_migrated_resources.py` uses to roll the migration
+back, so keep the checkpoint file around after a run completes.
 
 ### Timing report (`--timing`)
 
@@ -305,12 +308,19 @@ feedback phase:
 
 ## `verify_counts.py`
 
-Run **after** a migration to confirm it was complete. It reads the date window
-and task scope from the migration run's checkpoint file, then connects to
-**both** databases directly and compares row counts: Shield (source) vs Engine
-(target). Each row prints `shield=… engine=…` with a ✓ when they match and ✗
-when they don't. A final section checks that no org-scoped rows were written to
-the Engine without an `org_id`. Exits `0` if everything matches, `1` otherwise.
+Run **after** a migration to confirm it was complete. It reads the date window,
+task scope, and migrated IDs from the migration run's checkpoint file, then
+connects to **both** databases directly and compares row counts: Shield (source)
+vs Engine (target). Engine-side counts are scoped to the IDs the run recorded
+(`migrated_task_ids`, `migrated_rule_ids`, `migrated_taskless_inference_ids`),
+so data in the Engine that the run didn't insert never affects the comparison.
+Each row prints `shield=… engine=…` with a ✓ when they match and ✗ when they
+don't. A config section verifies every migrated task, rule, and task–rule link
+exists in the Engine; a rule-result-details section compares the full detail
+tree (`rule_result_details` plus hallucination claims, PII entities, keyword
+matches, regex matches, and toxicity scores); a final section checks that no
+org-scoped rows were written to the Engine without an `org_id`. Exits `0` if
+everything matches, `1` otherwise.
 
 ### Setup
 
@@ -388,6 +398,13 @@ scoped to those tasks.
   Org:    <target-org-uuid>
 ======================================================================
 
+Config (migrated IDs recorded in the save file)
+  ✓          tasks                        shield=42  engine=42
+  ✓          task_rule_links              shield=213  engine=213
+  ✓          rules                        shield=124  engine=124
+
+Shield tasks archived (not migrated): 7,561
+
 Inferences
   ✓          inferences                   shield=1,204,556  engine=1,204,556
   ✓          inference_prompts            shield=1,204,556  engine=1,204,556
@@ -396,6 +413,14 @@ Inferences
 Validation (rule) results
   ✓          prompt_rule_results          shield=1,204,556  engine=1,204,556
   ✓          response_rule_results        shield=1,150,003  engine=1,150,003
+
+Rule result details
+  ✓          rule_result_details          shield=2,354,559  engine=2,354,559
+  ✓          hallucination_claims         shield=88,411  engine=88,411
+  ✓          pii_entities                 shield=41,006  engine=41,006
+  ✓          keyword_matches              shield=12,733  engine=12,733
+  ✓          regex_matches                shield=8,290  engine=8,290
+  ✓          toxicity_scores              shield=2,354,559  engine=2,354,559
 
 Feedback
   ✓          inference_feedback           shield=9,812  engine=9,812
@@ -411,28 +436,32 @@ Rows for org-scoped resources missing an org_id (each should be 0)
 
 ## `delete_migrated_resources.py`
 
-Rolls back a migration. It reads the `migrated_task_ids` and
-`migrated_taskless_inference_ids` recorded in a migration run's checkpoint
-file and deletes everything that run inserted, through the **Engine migration API**.
+Rolls back a migration. It reads the `migrated_task_ids`,
+`migrated_taskless_inference_ids`, and `migrated_rule_ids` recorded in a
+migration run's checkpoint file and deletes everything that run inserted,
+directly against the **Engine PostgreSQL database**.
 
-For each migrated task it deletes: rule results, feedback, inferences, task–rule links (plus any rules left unlinked from every task as a
-result), and finally the task itself. Task-less inferences recorded in the
-checkpoint are then deleted individually by ID.
+For each migrated task it deletes the inference subtree (rule results and
+their detail rows, feedback, prompt/response contents, inferences) in
+FK-safe batched transactions, then removes task–rule links, migrated and
+orphaned rules, and the tasks themselves. Task-less inferences recorded in
+the checkpoint are deleted the same way.
 
 **The script is a dry run by default** — it only lists what it would delete. Pass `--execute` to actually delete.
 
 ### Setup
 
+Uses the same `ENGINE_POSTGRES_*` environment variables as `verify_counts.py`.
+
 | Variable | Description |
 |---|---|
-| `ENGINE_BASE_URL` | Base URL of the Engine API (no trailing slash) |
-| `ENGINE_API_KEY` | Engine admin API key |
-| `MIGRATION_TIMEOUT` | *(optional)* per-request HTTP timeout in seconds, default `30` |
+| `MIGRATION_SQL_BATCH_SIZE` | *(optional)* inferences deleted per transaction, default `25000` |
+| `MIGRATION_SQL_WORKERS` | *(optional)* parallel delete connections, default `4` |
 
 ### Usage
 
 ```bash
-# Dry run — list the tasks and task-less inferences that would be deleted
+# Dry run — list the tasks, inferences, and rules that would be deleted
 python delete_migrated_resources.py --save-file migration_states/migration_state_2026-01-09_to_2026-07-08.json
 
 # Actually delete

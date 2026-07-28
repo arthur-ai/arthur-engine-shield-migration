@@ -144,6 +144,7 @@ def verify(
     task_ids=None,
     migrated_task_ids=None,
     taskless_inference_ids=None,
+    migrated_rule_ids=None,
 ):
     lines = []
 
@@ -200,6 +201,48 @@ def verify(
     excluded = "(i.task_id IS NOT NULL AND COALESCE(t.archived, TRUE) = TRUE)"
 
     with shield.connect() as sc, engine.connect() as ec:
+        # ── Config (tasks / rules / links recorded in the save file) ────────
+        lines.append("Config (migrated IDs recorded in the save file)")
+        if migrated_task_ids:
+            e = count(
+                ec,
+                "tasks",
+                "WHERE id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            all_match = all_match and e == len(migrated_task_ids)
+            lines.append(compare("tasks", len(migrated_task_ids), e))
+            s = count(
+                sc,
+                "tasks_to_rules",
+                "WHERE task_id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            e = count(
+                ec,
+                "tasks_to_rules",
+                "WHERE task_id = ANY(:mids)",
+                {"mids": migrated_task_ids},
+            )
+            all_match = all_match and s == e
+            lines.append(compare("task_rule_links", s, e))
+        if migrated_rule_ids:
+            e = count(
+                ec,
+                "rules",
+                "WHERE id = ANY(:mids)",
+                {"mids": migrated_rule_ids},
+            )
+            all_match = all_match and e == len(migrated_rule_ids)
+            lines.append(compare("rules", len(migrated_rule_ids), e))
+        if not migrated_task_ids and not migrated_rule_ids:
+            lines.append("  (save file records no migrated task or rule IDs)")
+        archived_tasks_n = count(sc, "tasks", "WHERE archived")
+        lines.append(
+            f"\nShield tasks archived (not migrated): {fmt(archived_tasks_n)}",
+        )
+        lines.append("")
+
         # ── Inferences ──────────────────────────────────────────────────────
         lines.append("Inferences")
         for label, from_sql in inference_tables:
@@ -230,12 +273,8 @@ def verify(
             excluded_where,
             excluded_params,
         )
-        archived_tasks_n = count(sc, "tasks", "WHERE archived")
         lines.append(
-            f"\nShield tasks archived (not migrated): {fmt(archived_tasks_n)}",
-        )
-        lines.append(
-            f"Shield inferences referencing archived tasks"
+            f"\nShield inferences referencing archived tasks"
             f" (not migrated, excluded from the counts above): {fmt(excluded_n)}",
         )
         lines.append("")
@@ -282,6 +321,60 @@ def verify(
                 e = count(ec, table, org_where, org_params)
             all_match = all_match and s == e
             lines.append(compare(table, s, e))
+        lines.append("")
+
+        # ── Rule result details ─────────────────────────────────────────────
+        # Each detail hangs off either a prompt or a response rule result, so
+        # every table is counted once per path and the two counts are summed.
+        lines.append("Rule result details")
+        prompt_tail = (
+            "JOIN prompt_rule_results rr ON d.prompt_rule_result_id = rr.id "
+            "JOIN inference_prompts p ON rr.inference_prompt_id = p.id "
+            "JOIN inferences i ON p.inference_id = i.id"
+        )
+        response_tail = (
+            "JOIN response_rule_results rr ON d.response_rule_result_id = rr.id "
+            "JOIN inference_responses r ON rr.inference_response_id = r.id "
+            "JOIN inferences i ON r.inference_id = i.id"
+        )
+        detail_child_join = "JOIN rule_result_details d ON c.rule_result_detail_id = d.id"
+        detail_tables = (
+            ("rule_result_details", "rule_result_details d", "d"),
+            ("hallucination_claims", f"hallucination_claims c {detail_child_join}", "c"),
+            ("pii_entities", f"pii_entities c {detail_child_join}", "c"),
+            ("keyword_matches", f"keyword_matches c {detail_child_join}", "c"),
+            ("regex_matches", f"regex_matches c {detail_child_join}", "c"),
+            ("toxicity_scores", f"toxicity_scores c {detail_child_join}", "c"),
+        )
+        scoped = bool(task_ids or migrated_task_ids or taskless_inference_ids)
+        for label, base_sql, org_alias in detail_tables:
+            s_total = 0
+            e_total = 0
+            for tail in (prompt_tail, response_tail):
+                from_sql = f"{base_sql} {tail}"
+                s_where, s_params = task_clause(
+                    and_clause(rr_where, kept),
+                    rr_params,
+                    task_ids,
+                )
+                s_total += count(sc, f"{from_sql} {archived_join}", s_where, s_params)
+                if scoped:
+                    e_where, e_params = task_clause(
+                        and_clause(rr_where, f"{org_alias}.org_id = :org_id"),
+                        {**rr_params, "org_id": org_id},
+                        task_ids,
+                    )
+                    e_where, e_params = migrated_scope_clause(
+                        e_where,
+                        e_params,
+                        migrated_task_ids,
+                        taskless_inference_ids,
+                    )
+                    e_total += count(ec, from_sql, e_where, e_params)
+            if not scoped:
+                e_total = count(ec, label, org_where, org_params)
+            all_match = all_match and s_total == e_total
+            lines.append(compare(label, s_total, e_total))
         lines.append("")
 
         # ── Feedback ────────────────────────────────────────────────────────
@@ -384,6 +477,7 @@ def main():
     task_ids = sorted(state.get("task_ids") or []) or None
     migrated_task_ids = state.get("migrated_task_ids") or None
     taskless_inference_ids = state.get("migrated_taskless_inference_ids") or None
+    migrated_rule_ids = state.get("migrated_rule_ids") or None
 
     org_id = os.environ["ENGINE_ORG_ID"]
     shield = get_engine("SHIELD")
@@ -398,6 +492,7 @@ def main():
         task_ids,
         migrated_task_ids,
         taskless_inference_ids,
+        migrated_rule_ids,
     )
     raise SystemExit(0 if ok else 1)
 
