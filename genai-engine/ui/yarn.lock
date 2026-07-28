@@ -235,7 +235,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@amplitude/plugin-session-replay-browser@npm:^1.31.1":
+"@amplitude/plugin-session-replay-browser@npm:^1.33.6":
   version: 1.33.6
   resolution: "@amplitude/plugin-session-replay-browser@npm:1.33.6"
   dependencies:
@@ -453,14 +453,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@arthur/shared-components@npm:3.23.1":
-  version: 3.23.1
-  resolution: "@arthur/shared-components@npm:3.23.1::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Fshared-components%2F-%2F%40arthur%2Fshared-components-3.23.1.tgz"
+"@arthur/shared-components@npm:^3.23.3":
+  version: 3.23.3
+  resolution: "@arthur/shared-components@npm:3.23.3::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Fshared-components%2F-%2F%40arthur%2Fshared-components-3.23.3.tgz"
   dependencies:
     "@amplitude/analytics-browser": "npm:2.33.3"
     "@arizeai/openinference-semantic-conventions": "npm:2.1.0"
-    "@arthur/shield-types": "npm:^3.23.1"
-    "@arthur/unify-types": "npm:^3.23.1"
+    "@arthur/shield-types": "npm:^3.23.3"
+    "@arthur/unify-types": "npm:^3.23.3"
     "@base-ui/react": "npm:1.3.0"
     "@dnd-kit/core": "npm:6.3.1"
     "@dnd-kit/sortable": "npm:10.0.0"
@@ -470,7 +470,7 @@ __metadata:
     "@tanstack/react-form": "npm:1.27.7"
     "@tanstack/react-query": "npm:5.90.17"
     "@tanstack/react-query-devtools": "npm:5.91.2"
-    axios: "npm:1.17.0"
+    axios: "npm:^1.18.1"
     clsx: "npm:2.1.1"
     dayjs: "npm:1.11.13"
     material-react-table: "npm:3.2.1"
@@ -497,26 +497,26 @@ __metadata:
     react-dom: ^18.0.0 || ^19.0.0
     react-error-boundary: ^6.1.2
     react-i18next: ^17.0.8
-    react-router-dom: ^7.0.0
-  checksum: 10c0/f85b55a42cb47cd3256a35298bf391045d9b502adc45a528f220c40fbca9a177aaaea9776b543829f999b82e2c36f9ae4f9d2825c720d26a0af38dc2564b5541
+    react-router: ^8.0.0
+  checksum: 10c0/485b7a4cc607fbedd35c3792e5f0487fe3df43465d6c6c9acbb77b843cc2ef1f3c277a1d32ef4dc54ef6363603dd7afe1199d30cf479b7eb588b2baa351a2d6c
   languageName: node
   linkType: hard
 
-"@arthur/shield-types@npm:^3.23.1":
-  version: 3.23.1
-  resolution: "@arthur/shield-types@npm:3.23.1::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Fshield-types%2F-%2F%40arthur%2Fshield-types-3.23.1.tgz"
+"@arthur/shield-types@npm:^3.23.3":
+  version: 3.23.3
+  resolution: "@arthur/shield-types@npm:3.23.3::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Fshield-types%2F-%2F%40arthur%2Fshield-types-3.23.3.tgz"
   dependencies:
     react: "npm:^19.1.1"
-  checksum: 10c0/59202a847652127bf6fd8cd2a55a0d6e8cdbe2da58b9c4151521b87d801e2574505053fa772e401518b94255e1d05aed4aac2e5db15f9a978e208377659edb0a
+  checksum: 10c0/8a54aa0e4c9e1a235b0a868576a226c5763aa5a949e3ba4668815a68f5236b5682c8936b3f46f0b68a8d5d9326c7c4cc27ea7d257c20f397ba26b1764fb56140
   languageName: node
   linkType: hard
 
-"@arthur/unify-types@npm:^3.23.1":
-  version: 3.23.1
-  resolution: "@arthur/unify-types@npm:3.23.1::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Funify-types%2F-%2F%40arthur%2Funify-types-3.23.1.tgz"
+"@arthur/unify-types@npm:^3.23.3":
+  version: 3.23.3
+  resolution: "@arthur/unify-types@npm:3.23.3::__archiveUrl=https%3A%2F%2Fgitlab.com%2Fapi%2Fv4%2Fprojects%2F54848372%2Fpackages%2Fnpm%2F%40arthur%2Funify-types%2F-%2F%40arthur%2Funify-types-3.23.3.tgz"
   dependencies:
     react: "npm:19.2"
-  checksum: 10c0/ee3466b275bc8dcad2dce5000ed11d6d0ab2b8e7852f1cce70033c58ffc6b00901205585b40f25afb8c9395f0d3958b114067e587b8693c1829f744385493d0d
+  checksum: 10c0/084247a9d7ddbb10d231f75f359fe55bc6542eae54b25103118b01545f425a5451998808ba250b09ce1ce9f3972af71caf05d2051a145b2fb4f6afb288d3dd8d
   languageName: node
   linkType: hard
 
@@ -3462,19 +3462,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"axios@npm:1.17.0":
-  version: 1.17.0
-  resolution: "axios@npm:1.17.0"
-  dependencies:
-    follow-redirects: "npm:^1.16.0"
-    form-data: "npm:^4.0.5"
-    https-proxy-agent: "npm:^5.0.1"
-    proxy-from-env: "npm:^2.1.0"
-  checksum: 10c0/c4fa19ff3a3a63bde48beec03ad816b133b9a6385cccffffe172577ab18c6a70e299280d57f12c80c867fe25df41f92cb91d3a8258708a6d2be3e9e085f92650
-  languageName: node
-  linkType: hard
-
-"axios@npm:1.18.1":
+"axios@npm:1.18.1, axios@npm:^1.18.1":
   version: 1.18.1
   resolution: "axios@npm:1.18.1"
   dependencies:
@@ -3563,21 +3551,21 @@ __metadata:
   linkType: hard
 
 "brace-expansion@npm:^1.1.7":
-  version: 1.1.15
-  resolution: "brace-expansion@npm:1.1.15"
+  version: 1.1.16
+  resolution: "brace-expansion@npm:1.1.16"
   dependencies:
     balanced-match: "npm:^1.0.0"
     concat-map: "npm:0.0.1"
-  checksum: 10c0/648e273f57cfa9ed67d8a77bdb15b408205465d33da9331808ee3c188d8b55674c9cdbf1f320b65bc562e485e1263360ae62ad355e128e0435891f6430e795d7
+  checksum: 10c0/b2a915bbedbf4e45840d1fb9a4d391bbf26a79475bd134714d3cee34f1f0edb0ce982738028843be5fbaf8039429f71fa487df8c915b6065ced542c83e58fae6
   languageName: node
   linkType: hard
 
 "brace-expansion@npm:^5.0.5":
-  version: 5.0.6
-  resolution: "brace-expansion@npm:5.0.6"
+  version: 5.0.8
+  resolution: "brace-expansion@npm:5.0.8"
   dependencies:
     balanced-match: "npm:^4.0.2"
-  checksum: 10c0/8c919869b90f61d533b341d3340be5ee4413232ea89b8246cbc2f38eb014f1d8182785c98a006eaf6111d02dc9eeffefdc240d5ac158625b2ed084dccd4bbf9b
+  checksum: 10c0/73304caafd00fdc5b0168e693ac15bf25b6357dec76d1195fcd628fe2cf99c46f9c889a7ecfa3cfe236dbd2d5ce3e27a6ccc4370b46d475d0d19081e11f86019
   languageName: node
   linkType: hard
 
@@ -3967,10 +3955,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"cookie@npm:^1.0.1":
-  version: 1.1.1
-  resolution: "cookie@npm:1.1.1"
-  checksum: 10c0/79c4ddc0fcad9c4f045f826f42edf54bcc921a29586a4558b0898277fa89fb47be95bc384c2253f493af7b29500c830da28341274527328f18eba9f58afa112c
+"cookie-es@npm:^3.1.1":
+  version: 3.1.1
+  resolution: "cookie-es@npm:3.1.1"
+  checksum: 10c0/62cf0c325cc547b52477b351e9b5d068b3ffc74f7d143cdf7af854648dd1015fca3aed1498b355365e24b0746333f0b15688ed3a535abecc5ed0a046ae956a84
   languageName: node
   linkType: hard
 
@@ -4972,9 +4960,9 @@ __metadata:
   linkType: hard
 
 "fast-uri@npm:^3.0.1":
-  version: 3.1.2
-  resolution: "fast-uri@npm:3.1.2"
-  checksum: 10c0/5b35641895959f3f7ab7a7b1b5542bded159346f25ec9f256817b206d50b64eda5828e90d605a2e2fc645c90519a7259c2bab2c942ee728c88b88e5be21b090d
+  version: 3.1.4
+  resolution: "fast-uri@npm:3.1.4"
+  checksum: 10c0/f90948821ceb49980f64f89b8216ba498f5957f26035be813526a55b6145d26cbd63ef5618d5205a3292b31edc9c08589749350cd72bd86c7095eb434dceb757
   languageName: node
   linkType: hard
 
@@ -5956,18 +5944,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"js-yaml@npm:^4.1.0":
-  version: 4.2.0
-  resolution: "js-yaml@npm:4.2.0"
-  dependencies:
-    argparse: "npm:^2.0.1"
-  bin:
-    js-yaml: bin/js-yaml.js
-  checksum: 10c0/1916456c118746603b067d74bbcbb0445d9a1d5e474ad4ae775e7b20525bed902e01d9d97dd0c81fcd8d4f596162309d0eb057f4aa38f3e9647f14075e9dea45
-  languageName: node
-  linkType: hard
-
-"js-yaml@npm:^4.3.0":
+"js-yaml@npm:^4.1.0, js-yaml@npm:^4.3.0":
   version: 4.3.0
   resolution: "js-yaml@npm:4.3.0"
   dependencies:
@@ -7032,12 +7009,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nanoid@npm:^3.3.12":
-  version: 3.3.12
-  resolution: "nanoid@npm:3.3.12"
+"nanoid@npm:^3.3.16":
+  version: 3.3.16
+  resolution: "nanoid@npm:3.3.16"
   bin:
     nanoid: bin/nanoid.cjs
-  checksum: 10c0/ba142b7b39e11e80c16dd74b0365d407880c87c1cf7e1480956981ae940ee36060fa5b6f092cd1e315184dd19244c657bd017d03327bd3c62247d691c5e8edfb
+  checksum: 10c0/bbf2dcffe22d2b62d16de2711752070b539c0f644c7916f823ad6521986b2078cbe524f2d6240f58c46e9141ea0c7b87a029e100c0f7f175228cacaf30e41bba
   languageName: node
   linkType: hard
 
@@ -7617,13 +7594,13 @@ __metadata:
   linkType: hard
 
 "postcss@npm:^8.4.38, postcss@npm:^8.5.15":
-  version: 8.5.15
-  resolution: "postcss@npm:8.5.15"
+  version: 8.5.24
+  resolution: "postcss@npm:8.5.24"
   dependencies:
-    nanoid: "npm:^3.3.12"
+    nanoid: "npm:^3.3.16"
     picocolors: "npm:^1.1.1"
     source-map-js: "npm:^1.2.1"
-  checksum: 10c0/7f2e63ae22fbe43aace1bf652bd99da4e90737c64194d49e51ddc9cd0f9e51ff2861a7d734379b494deffa03a880a5c65eec70bc29ee9ebaa7136dde3eee8f31
+  checksum: 10c0/b3854840ffee4604249a1bad97291105a974009d63b068b716dbee1d2e034bb965353a9fb4d6e957ede475b2acf4167cd4b1d41074f8dd3ce2fe488b60c8ce44
   languageName: node
   linkType: hard
 
@@ -7848,31 +7825,18 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-router-dom@npm:7.17.0":
-  version: 7.17.0
-  resolution: "react-router-dom@npm:7.17.0"
+"react-router@npm:^8.3.0":
+  version: 8.3.0
+  resolution: "react-router@npm:8.3.0"
   dependencies:
-    react-router: "npm:7.17.0"
+    cookie-es: "npm:^3.1.1"
   peerDependencies:
-    react: ">=18"
-    react-dom: ">=18"
-  checksum: 10c0/60fc4022bccf2fb17b0d8ae8e7c4bda866ca9bf2d45edf0bcbefc854e97fa8971a589b6b77b984a19abecb718faffde357c829d9a22a7913790d608cc7433714
-  languageName: node
-  linkType: hard
-
-"react-router@npm:7.17.0":
-  version: 7.17.0
-  resolution: "react-router@npm:7.17.0"
-  dependencies:
-    cookie: "npm:^1.0.1"
-    set-cookie-parser: "npm:^2.6.0"
-  peerDependencies:
-    react: ">=18"
-    react-dom: ">=18"
+    react: ">=19.2.7"
+    react-dom: ">=19.2.7"
   peerDependenciesMeta:
     react-dom:
       optional: true
-  checksum: 10c0/dfa9b0182edba6fab14ef5ac297b292068e71e05bf7e07c6b45fe073d77002089e8e164542364232a8bbb0c7d3ec47b57b78db3984c4383e12308f2d31ad404a
+  checksum: 10c0/c1277d6a75ff1b77e759bc0142e3257b6cea1eb683595a64a19d7fb341a7b9ba30c81ef8fc426e437c7fbec043bde683462b2463a055b0f58c8e5ad19cdee2ad
   languageName: node
   linkType: hard
 
@@ -8307,13 +8271,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"set-cookie-parser@npm:^2.6.0":
-  version: 2.7.2
-  resolution: "set-cookie-parser@npm:2.7.2"
-  checksum: 10c0/4381a9eb7ee951dfe393fe7aacf76b9a3b4e93a684d2162ab35594fa4053cc82a4d7d7582bf397718012c9adcf839b8cd8f57c6c42901ea9effe33c752da4a45
-  languageName: node
-  linkType: hard
-
 "set-function-length@npm:^1.2.2":
   version: 1.2.2
   resolution: "set-function-length@npm:1.2.2"
@@ -8721,7 +8678,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"swagger-typescript-api@npm:^13.12.2":
+"swagger-typescript-api@npm:^13.12.6":
   version: 13.12.6
   resolution: "swagger-typescript-api@npm:13.12.6"
   dependencies:
@@ -8821,15 +8778,15 @@ __metadata:
   linkType: hard
 
 "tar@npm:^7.5.4":
-  version: 7.5.16
-  resolution: "tar@npm:7.5.16"
+  version: 7.5.22
+  resolution: "tar@npm:7.5.22"
   dependencies:
     "@isaacs/fs-minipass": "npm:^4.0.0"
     chownr: "npm:^3.0.0"
     minipass: "npm:^7.1.2"
     minizlib: "npm:^3.1.0"
     yallist: "npm:^5.0.0"
-  checksum: 10c0/4f37f3c4bd2ca2755fd736a5df1d573c1a868ec1b1e893346aeafa95ac510f9e2fd1469420bd866cc7904799e5bd4ac62b5d4f03fe27747d6e1e373b44505c5c
+  checksum: 10c0/1311f6be85a8157ac4c9147bae43e13923d2a1aae15e4aa1bd5239e4e03d2cf53cfe103dde7f35832fbb4c938b042856bc8e9a0afd29abd05e2d1608788c4fea
   languageName: node
   linkType: hard
 
@@ -9108,9 +9065,9 @@ __metadata:
   dependencies:
     "@amplitude/analytics-browser": "npm:2.45.4"
     "@amplitude/experiment-js-client": "npm:^1.21.1"
-    "@amplitude/plugin-session-replay-browser": "npm:^1.31.1"
+    "@amplitude/plugin-session-replay-browser": "npm:^1.33.6"
     "@arizeai/openinference-semantic-conventions": "npm:2.5.0"
-    "@arthur/shared-components": "npm:3.23.1"
+    "@arthur/shared-components": "npm:^3.23.3"
     "@base-ui/react": "npm:1.6.0"
     "@dnd-kit/core": "npm:6.3.1"
     "@dnd-kit/sortable": "npm:10.0.0"
@@ -9165,11 +9122,11 @@ __metadata:
     react-dom: "npm:19.2.7"
     react-error-boundary: "npm:6.1.2"
     react-markdown: "npm:10.1.0"
-    react-router-dom: "npm:7.17.0"
+    react-router: "npm:^8.3.0"
     react-use-measure: "npm:2.1.7"
     rehype-sanitize: "npm:^6.0.0"
     remark-gfm: "npm:4.0.1"
-    swagger-typescript-api: "npm:^13.12.2"
+    swagger-typescript-api: "npm:^13.12.6"
     tailwind-merge: "npm:3.5.0"
     tailwindcss: "npm:4.3.3"
     typescript: "npm:5.9.3"

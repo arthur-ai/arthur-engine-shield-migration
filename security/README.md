@@ -3,6 +3,15 @@
 This directory holds the **vulnerability justification source of truth** for the Docker images
 Arthur ships (`genai-engine-cpu`, `genai-engine-gpu`, `ml-engine`, `genai-engine-models-*`).
 
+> **Fork note (arthur-engine-shield-migration).** This repo also publishes
+> `genai-engine-shield-migration-gpu`, built from the same dockerfile as `genai-engine-gpu`.
+> Trivy matches VEX statements by **product purl**, so a statement listing only
+> `pkg:oci/genai-engine-gpu` does not suppress the identical finding on the migration image —
+> it silently reappears as untriaged backlog. Every statement covering `pkg:oci/genai-engine-gpu`
+> therefore also lists `pkg:oci/genai-engine-shield-migration-gpu`. **Keep the two in step when
+> adding statements**, and re-pair them after merging upstream, which only knows about the
+> `genai-engine-gpu` half.
+
 Customers cannot accept HIGH/CRITICAL vulnerabilities, so for every such finding we maintain a
 documented position: either it is remediated (upgrade the package/base image) or it is
 **justified** via a [VEX](https://openvex.dev/) statement explaining why it is not exploitable
