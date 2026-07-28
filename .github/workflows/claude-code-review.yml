@@ -22,6 +22,11 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
+    # Binds the environment-scoped ANTHROPIC_API_KEY. Without this the job falls back to the
+    # repo-level secret of the same name, which is what produced is_error:true with
+    # num_turns:1 and zero cost on every run.
+    environment: shared-protected-branch-secrets
+
     runs-on: ubuntu-latest
     permissions:
       contents: read

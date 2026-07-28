@@ -222,6 +222,11 @@ jobs:
       github.ref != 'refs/heads/main' &&
       github.ref != 'refs/heads/dev' &&
       needs.check-genai-engine-changes.outputs.ui == 'true'
+    # GITLAB_UNIFY_FRONTEND_TOKEN lives in this environment in this fork (upstream carries it
+    # as a repo-level secret). Environment secrets are invisible to jobs that do not declare
+    # the environment, so without this the token resolves empty and yarn falls back to an
+    # anonymous fetch of the private @arthur/* packages.
+    environment: shared-protected-branch-secrets
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
