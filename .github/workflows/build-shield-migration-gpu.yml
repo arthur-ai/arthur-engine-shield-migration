@@ -45,6 +45,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      # Fail fast with an actionable message. This fork was created without Docker Hub
+      # credentials, so every merge to main burned ~2 minutes of disk cleanup and then died
+      # inside docker/login-action with the opaque "Username and password required" — the
+      # image was silently never published. Name the missing secrets instead.
+      - name: Preflight — required secrets
+        shell: bash
+        env:
+          DOCKERHUB_OSS_USERNAME: ${{ secrets.DOCKERHUB_OSS_USERNAME }}
+          DOCKERHUB_OSS_TOKEN: ${{ secrets.DOCKERHUB_OSS_TOKEN }}
+          GITLAB_UNIFY_FRONTEND_TOKEN: ${{ secrets.GITLAB_UNIFY_FRONTEND_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for s in DOCKERHUB_OSS_USERNAME DOCKERHUB_OSS_TOKEN GITLAB_UNIFY_FRONTEND_TOKEN; do
+            [ -n "${!s:-}" ] || missing+=("$s")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            {
+              echo "### Cannot publish the shield-migration GPU image"
+              echo
+              echo "Missing required secrets:"
+              printf -- '- `%s`\n' "${missing[@]}"
+              echo
+              echo "Add them to this repository's **shared-protected-branch-secrets**"
+              echo "environment (Settings → Environments), then re-run. \`DOCKERHUB_OSS_*\` must"
+              echo "be able to push to \`arthurplatform/genai-engine-shield-migration-gpu\`;"
+              echo "\`GITLAB_UNIFY_FRONTEND_TOKEN\` is required for the private \`@arthur/*\`"
+              echo "packages in the UI build stage."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Missing required secrets: ${missing[*]} — add them to the shared-protected-branch-secrets environment (Settings → Environments). See the job summary."
+            exit 1
+          fi
+
       # The GPU image is ~10GB; reclaim runner disk before building or the export
       # step dies with "no space left on device". Same action the release build uses.
       - uses: mathio/gha-cleanup@v1
@@ -67,6 +100,23 @@ jobs:
           IMAGE: arthurplatform/genai-engine-shield-migration-gpu
         run: |
           set -euo pipefail
+          # VERSION is set by composite-actions/set-version, which reads ./version verbatim and
+          # appends -dev off main. Assert the tag really is that file's content: ./version is
+          # owned by upstream ("Increment arthur-engine version" commits) and arrives through
+          # every upstream sync, so a botched merge of it must fail the build rather than
+          # publish an unversioned, stale, or empty tag.
+          FILE_VERSION="$(tr -d '[:space:]' < version)"
+          if [ -z "${FILE_VERSION}" ]; then
+            echo "::error::./version is empty — refusing to publish an untagged image."
+            exit 1
+          fi
+          case "${VERSION}" in
+            "${FILE_VERSION}" | "${FILE_VERSION}-dev") ;;
+            *)
+              echo "::error::Tag mismatch: VERSION='${VERSION}' but ./version contains '${FILE_VERSION}'."
+              exit 1
+              ;;
+          esac
           {
             echo "list<<EOF"
             echo "${IMAGE}:${VERSION}"
@@ -74,6 +124,14 @@ jobs:
             echo "EOF"
             echo "scan=${IMAGE}:${VERSION}"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Publishing \`${IMAGE}\`"
+            echo
+            echo "| tag | source |"
+            echo "| --- | --- |"
+            echo "| \`${VERSION}\` | \`./version\` |"
+            if [ "${PUSH_LATEST}" = "true" ]; then echo "| \`latest\` | moved to this build |"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.1.0
@@ -110,11 +168,17 @@ jobs:
           sbom: true
 
       # Advisory only — a CVE must never block publishing the migration image.
+      #
+      # OSS (not ENTERPRISE) credentials: the image being scanned is the one this job just
+      # pushed to the OSS `arthurplatform` namespace, so the account that pushed it is the
+      # account that should pull it. Upstream's release workflow passes ENTERPRISE here, but
+      # this fork has no DOCKERHUB_ENTERPRISE_* secrets, which left the pull anonymous and
+      # rate-limited. Do not "restore" the upstream names when resolving a sync conflict.
       - name: Scan image & generate justification docs
         continue-on-error: true
         uses: ./.github/workflows/composite-actions/vuln-report
         with:
           image: ${{ steps.tags.outputs.scan }}
           slug: shield-migration-gpu
-          dockerhub-username: ${{ secrets.DOCKERHUB_ENTERPRISE_USERNAME }}
-          dockerhub-token: ${{ secrets.DOCKERHUB_ENTERPRISE_TOKEN }}
+          dockerhub-username: ${{ secrets.DOCKERHUB_OSS_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_OSS_TOKEN }}

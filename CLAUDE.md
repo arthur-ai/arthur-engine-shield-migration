@@ -422,9 +422,120 @@ GENAI_ENGINE_INTERNAL_API_KEY=<api-key>
 
 ## Key Branches
 
-- `main` - Production releases
-- `dev` - Development/staging
-- Feature branches created from `dev`
+This is a **fork** of [`arthur-ai/arthur-engine`](https://github.com/arthur-ai/arthur-engine) and its
+branch model differs from upstream's:
+
+- `main` - the only long-lived branch in this fork. Feature branches are cut from `main` and PR back into it.
+- **There is no `dev` branch here.** Upstream has one and its CI depends on it; see the
+  "Syncing from upstream" section below for what that breaks.
+
+## Syncing from upstream arthur-engine
+
+Read this section before merging upstream — every item below has already cost a debugging cycle.
+
+```bash
+git fetch upstream --prune
+git merge upstream/dev          # upstream/dev is the sync source, not upstream/main
+```
+
+Then open a PR into `main`. CI only triggers on push to `main`/`dev` and PRs targeting them, so a
+feature-branch push alone runs **nothing** — without a PR the sync sits unvalidated.
+
+### Recurring conflicts and their standing resolutions
+
+These reappear on most syncs. The resolutions are deliberate; do not "fix" them back to upstream.
+
+1. **`.github/workflows/meticulous.yaml` — modify/delete. Always keep the deletion.**
+   `d518aca0` removed the Meticulous workflow because it cannot run in this fork: it needs
+   `METICULOUS_API_TOKEN`/`METICULOUS_RECORDING_TOKEN`, which do not exist here, so it failed on
+   every UI PR. Upstream still maintains the file, so every upstream change to it resurfaces as a
+   modify/delete conflict. Resolve with `git rm .github/workflows/meticulous.yaml`.
+   Upstream's companion changes to [genai-engine/ui/vite.config.ts](genai-engine/ui/vite.config.ts)
+   (the `injectMeticulousRecordingScript` and sourcemap-chaining plugins) **do** merge in and should
+   be kept — they are gated on `GENERATE_SOURCEMAPS`/`METICULOUS_RECORDING_TOKEN` and stay inert
+   when unset. The same commit also dropped the `METICULOUS_*` build-args from the GPU build.
+
+2. **`security/vex/openvex.json` — re-pair the migration image.**
+   Trivy matches VEX statements by product purl. Upstream only knows `pkg:oci/genai-engine-gpu`, so
+   any statement it adds must also list `pkg:oci/genai-engine-shield-migration-gpu` or the finding
+   silently reappears as untriaged backlog on this fork's image. See the fork note in
+   [security/README.md](security/README.md). Edit line-level to preserve the file's compact product
+   formatting — reserializing the JSON churns ~150 lines and conflicts on every future sync.
+   Check for gaps after merging:
+
+   ```bash
+   python3 -c "
+   import json; d=json.load(open('security/vex/openvex.json'))
+   print([s['vulnerability']['name'] for s in d['statements']
+          if 'pkg:oci/genai-engine-gpu' in [p['@id'] for p in s.get('products',[])]
+          and 'pkg:oci/genai-engine-shield-migration-gpu' not in [p['@id'] for p in s.get('products',[])]])"
+   ```
+
+   A correct sync leaves this file **purely additive** over `upstream/dev` — the only difference
+   should be the added `genai-engine-shield-migration-gpu` product lines, zero deletions.
+
+3. **`genai-engine/staging.openapi.json` — generated; keep both sides.**
+   FastAPI emits `components.schemas` in **strictly alphabetical** key order, and both forks add
+   schemas, so conflicts are usually two insertions at the same point. Keep both and re-sort. CI's
+   changelog job regenerates the spec and diffs it, and the ml-engine client is generated from it,
+   so a misordered resolution fails CI.
+
+4. **`./version` — always take upstream's.** Upstream owns it via its "Increment arthur-engine
+   version" commits, and it is what tags the published image (below).
+
+### Verifying a sync actually landed
+
+Commit ancestry alone does not prove content survived a conflict resolution. After merging:
+
+```bash
+git merge-base --is-ancestor upstream/dev HEAD && echo "all upstream commits reachable"
+BASE=$(git merge-base HEAD^1 HEAD^2)
+# Files upstream touched that are NOT byte-identical in HEAD — each needs a justification
+comm -12 <(git diff --name-only $BASE upstream/dev | sort) \
+         <(git diff --name-only upstream/dev HEAD | sort)
+```
+
+Every file that lists should be one both sides changed. For those, confirm upstream's added lines
+are all present. `.github/workflows/meticulous.yaml` is the one intentional exception.
+
+## Publishing the shield-migration GPU image
+
+This fork publishes its GenAI Engine GPU build to a migration-scoped Docker Hub repo,
+[`arthurplatform/genai-engine-shield-migration-gpu`](https://hub.docker.com/repository/docker/arthurplatform/genai-engine-shield-migration-gpu/general),
+deliberately separate from the official `arthurplatform/genai-engine-gpu` so migration builds never
+clobber released images.
+
+- **Workflow:** [.github/workflows/build-shield-migration-gpu.yml](.github/workflows/build-shield-migration-gpu.yml)
+- **Trigger:** push to `main` touching `genai-engine/**`, `version`, the workflow itself, or the
+  `vuln-report` composite action. A merge of an upstream sync into `main` always touches
+  `genai-engine/**` and `version`, so **every sync merge republishes the image.**
+- **Tags:** `<contents of ./version>` and `latest`. The version comes from
+  [composite-actions/set-version](.github/workflows/composite-actions/set-version), which reads
+  `./version` verbatim and appends `-dev` when the ref is not `main`. The "Resolve image tags" step
+  asserts the tag matches `./version` and fails the build on an empty or mismatched value, so a
+  botched merge of `./version` cannot publish a stale or untagged image.
+- **Why this workflow exists:** upstream's main CI only builds images on "Increment arthur-engine
+  version" commits, which `version-workflow.yml` produces on `dev` — a branch this fork does not
+  have. That job therefore never fires here.
+
+**Required secrets**, in the `shared-protected-branch-secrets` environment (Settings → Environments):
+
+| Secret | Purpose |
+| --- | --- |
+| `DOCKERHUB_OSS_USERNAME` / `DOCKERHUB_OSS_TOKEN` | Push to the migration repo; also used for the authenticated pull in the advisory Trivy scan. |
+| `GITLAB_UNIFY_FRONTEND_TOKEN` | Required — the UI build stage exits 1 without it (private `@arthur/*` packages). |
+
+Optional (`AMPLITUDE_*`, `RECAPTCHA_ENTERPRISE_SITE_KEY`): when blank the corresponding UI feature
+stays disabled. `ENABLE_TELEMETRY` stays `false` — this is a migration fork, not a released build.
+Do **not** add `provenance: mode=max` to the build: the build-args carry secrets and `mode=max`
+records their values into the attestation on a public image.
+
+The scan step passes `DOCKERHUB_OSS_*`, not upstream's `DOCKERHUB_ENTERPRISE_*` (which do not exist
+in this fork) — the account that pushed the image is the one that should pull it. Do not restore the
+upstream names when resolving a conflict here.
+
+A "Preflight — required secrets" step fails fast and names anything missing, rather than dying later
+inside `docker/login-action` with the opaque `Username and password required`.
 
 ## Important Notes
 
