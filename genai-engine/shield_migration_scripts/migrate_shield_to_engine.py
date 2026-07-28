@@ -18,9 +18,11 @@ import argparse
 import hashlib
 import json
 import os
+import queue
 import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -49,6 +51,8 @@ MIGRATION_TIMEOUT = int(
     os.getenv("MIGRATION_TIMEOUT", default=30),
 )  # seconds for all HTTP calls
 MAX_WORKERS = int(os.getenv("MIGRATION_MAX_WORKERS", default=10))
+PREFETCH_PAGES = int(os.getenv("MIGRATION_PREFETCH_PAGES", default=10))
+SHIELD_FETCH_WORKERS = int(os.getenv("MIGRATION_SHIELD_FETCH_WORKERS", default=3))
 MAX_ATTEMPTS = 6
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
@@ -579,6 +583,39 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
 # ── Phase 2: Inferences ───────────────────────────────────────────────────────
 
 
+def fetch_shield_inference_pages(inf_params, cursor, page_queue, errors):
+    """Fetcher: claim pages from the shared cursor until the end page is known."""
+    try:
+        while True:
+            with cursor["lock"]:
+                if (
+                    cursor["end_page"] is not None
+                    and cursor["next_page"] > cursor["end_page"]
+                ):
+                    break
+                page = cursor["next_page"]
+                cursor["next_page"] += 1
+            resp = shield_get(
+                "/api/v2/migration/inferences/query",
+                params={
+                    **inf_params,
+                    "page_size": SHIELD_PAGE_SIZE,
+                    "page": page,
+                    "sort": "asc",
+                },
+            )
+            batch = resp.get("inferences", [])
+            if not batch or len(batch) < SHIELD_PAGE_SIZE:
+                with cursor["lock"]:
+                    if cursor["end_page"] is None or page < cursor["end_page"]:
+                        cursor["end_page"] = page
+            page_queue.put((page, batch, resp.get("count", 0)))
+    except BaseException as e:
+        errors.append(e)
+    finally:
+        page_queue.put(None)
+
+
 def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     if ckpt.phase_completed("inferences"):
         print("[inferences] Already completed — skipping.")
@@ -609,72 +646,120 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             f"(~{start_page * SHIELD_PAGE_SIZE:,} already committed)",
         )
 
-    page = start_page
     processed = start_page * SHIELD_PAGE_SIZE
     matched = 0
     inserted = 0
     skipped = 0
+    total_count = 0
     wanted_tasks = set(task_ids) if task_ids else None
     phase_start = time.monotonic()
     processed_this_run = 0
     chunk_timer = ChunkTimer(phase_start)
 
-    while True:
-        fetch_params = {
-            **inf_params,
-            "page_size": SHIELD_PAGE_SIZE,
-            "page": page,
-            "sort": "asc",
-        }
-        resp = shield_get("/api/v2/migration/inferences/query", params=fetch_params)
-        batch = resp.get("inferences", [])
-        total_count = resp.get("count", 0)
-        if not batch:
-            break
+    # Fetcher pool prefetches Shield pages while workers post earlier pages.
+    page_queue: queue.Queue = queue.Queue(maxsize=PREFETCH_PAGES)
+    producer_error: list = []
+    cursor = {"lock": threading.Lock(), "next_page": start_page, "end_page": None}
+    for _ in range(SHIELD_FETCH_WORKERS):
+        threading.Thread(
+            target=fetch_shield_inference_pages,
+            args=(inf_params, cursor, page_queue, producer_error),
+            daemon=True,
+        ).start()
 
-        if wanted_tasks is not None:
-            to_send = [inf for inf in batch if inf.get("task_id") in wanted_tasks]
-        else:
-            to_send = batch
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    in_flight = {}  # future -> page number
+    pending_chunks = {}  # page -> chunk count not yet completed
+    page_info = {}  # page -> (batch_len, sent_len, taskless_ids)
+    page_results = {}  # page -> [inserted, skipped]
+    next_commit = start_page
+    max_in_flight = MAX_WORKERS * 2
+    active_fetchers = SHIELD_FETCH_WORKERS
 
-        matched += len(to_send)
-        if to_send:
-            page_inserted, page_skipped = engine_post_batches(
-                "/api/v1/migration/inferences/bulk",
-                "inferences",
-                to_send,
-            )
-            inserted += page_inserted
-            skipped += page_skipped
+    try:
+        while active_fetchers or in_flight:
+            while active_fetchers and len(in_flight) < max_in_flight:
+                try:
+                    if in_flight:
+                        item = page_queue.get(block=False)
+                    else:
+                        item = page_queue.get()
+                except queue.Empty:
+                    break
+                if item is None:
+                    active_fetchers -= 1
+                    continue
+                page_no, batch, page_total = item
+                total_count = page_total or total_count
+                if not batch:
+                    continue
+                if wanted_tasks is not None:
+                    to_send = [
+                        inf for inf in batch if inf.get("task_id") in wanted_tasks
+                    ]
+                else:
+                    to_send = batch
+                page_info[page_no] = (
+                    len(batch),
+                    len(to_send),
+                    [inf["id"] for inf in batch if not inf.get("task_id")],
+                )
+                page_results[page_no] = [0, 0]
+                chunks = [
+                    to_send[i : i + ENGINE_BATCH_SIZE]
+                    for i in range(0, len(to_send), ENGINE_BATCH_SIZE)
+                ]
+                pending_chunks[page_no] = len(chunks)
+                for chunk in chunks:
+                    future = executor.submit(
+                        engine_post,
+                        "/api/v1/migration/inferences/bulk",
+                        {"inferences": chunk, "org_id": ENGINE_ORG_ID},
+                    )
+                    in_flight[future] = page_no
 
-        # Task-less inferences aren't reachable by task-scoped cleanup, so record
-        # their IDs for the delete script to remove them directly. A task-scoped
-        # run never migrates task-less inferences, so there is nothing to record.
-        if wanted_tasks is None:
-            ckpt.record_taskless_inferences(
-                [inf["id"] for inf in batch if not inf.get("task_id")],
-            )
+            if in_flight:
+                completed, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+                for future in completed:
+                    page_no = in_flight.pop(future)
+                    resp = future.result()
+                    page_results[page_no][0] += resp.get("inserted", 0)
+                    page_results[page_no][1] += resp.get("skipped", 0)
+                    pending_chunks[page_no] -= 1
 
-        processed += len(batch)
-        processed_this_run += len(batch)
-        chunk_timer.update(processed_this_run)
-        page += 1
-        ckpt.update_inference_page(page)  # checkpoint: next page to fetch on resume
-        pct = processed / total_count * 100 if total_count else 0
-        matched_note = f", {matched:,} matched tasks" if wanted_tasks else ""
-        print(
-            f"  [{pct:5.1f}%] {processed:,} / {total_count:,} inferences scanned"
-            f"{matched_note} "
-            f"({inserted:,} inserted, {skipped:,} skipped) (page {page - 1})",
-        )
+            # Checkpoint advances only through contiguously completed pages.
+            while pending_chunks.get(next_commit) == 0:
+                del pending_chunks[next_commit]
+                batch_len, sent_len, taskless_ids = page_info.pop(next_commit)
+                page_inserted, page_skipped = page_results.pop(next_commit)
+                matched += sent_len
+                inserted += page_inserted
+                skipped += page_skipped
+                if wanted_tasks is None:
+                    ckpt.record_taskless_inferences(taskless_ids)
+                processed += batch_len
+                processed_this_run += batch_len
+                chunk_timer.update(processed_this_run)
+                ckpt.update_inference_page(next_commit + 1)
+                pct = processed / total_count * 100 if total_count else 0
+                matched_note = f", {matched:,} matched tasks" if wanted_tasks else ""
+                print(
+                    f"  [{pct:5.1f}%] {processed:,} / {total_count:,} inferences scanned"
+                    f"{matched_note} "
+                    f"({inserted:,} inserted, {skipped:,} skipped) (page {next_commit})",
+                )
+                next_commit += 1
+    finally:
+        executor.shutdown(cancel_futures=True)
 
-        if len(batch) < SHIELD_PAGE_SIZE:
-            break
+    if producer_error:
+        raise producer_error[0]
 
     ckpt.phase_done("inferences")
+    phase_total = time.monotonic() - phase_start
     record_phase_timing(
         "inferences",
-        time.monotonic() - phase_start,
+        phase_total,
         processed_this_run,
         "inference",
         chunk_timer.times,
@@ -749,9 +834,10 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             break
 
     ckpt.phase_done("feedback")
+    phase_total = time.monotonic() - phase_start
     record_phase_timing(
         "feedback",
-        time.monotonic() - phase_start,
+        phase_total,
         processed_this_run,
         "feedback record",
         chunk_timer.times,
