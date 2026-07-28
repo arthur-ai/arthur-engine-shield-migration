@@ -522,7 +522,7 @@ clobber released images.
 
 | Secret | Purpose |
 | --- | --- |
-| `DOCKERHUB_OSS_USERNAME` / `DOCKERHUB_OSS_TOKEN` | Push to the migration repo; also used for the authenticated pull in the advisory Trivy scan. |
+| `DOCKERHUB_OSS_USERNAME` / `DOCKERHUB_OSS_TOKEN` | Push to the migration repo; also used for the authenticated pull in the advisory Trivy scan. Must be a **user account** that is a member of the `arthurplatform` org — the org name is not a login identity — with a **Read & Write** personal access token, not an account password (password login fails when 2FA is on). |
 | `GITLAB_UNIFY_FRONTEND_TOKEN` | Required — the UI build stage exits 1 without it (private `@arthur/*` packages). |
 
 Optional (`AMPLITUDE_*`, `RECAPTCHA_ENTERPRISE_SITE_KEY`): when blank the corresponding UI feature

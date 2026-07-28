@@ -77,6 +77,16 @@ jobs:
             echo "::error::Missing required secrets: ${missing[*]} — add them to the shared-protected-branch-secrets environment (Settings → Environments). See the job summary."
             exit 1
           fi
+          # Stray whitespace from a copy-paste is an unambiguous error and Docker Hub reports it
+          # only as "incorrect username or password". Compare each value against its trimmed form;
+          # never echo the values themselves.
+          for s in DOCKERHUB_OSS_USERNAME DOCKERHUB_OSS_TOKEN; do
+            v="${!s}"
+            if [ "$v" != "$(printf '%s' "$v" | tr -d '[:space:]')" ]; then
+              echo "::error::\`${s}\` contains whitespace (leading, trailing, or a newline from the paste). Re-add it with no surrounding whitespace."
+              exit 1
+            fi
+          done
 
       # The GPU image is ~10GB; reclaim runner disk before building or the export
       # step dies with "no space left on device". Same action the release build uses.
@@ -137,10 +147,46 @@ jobs:
         uses: docker/setup-buildx-action@v4.1.0
 
       - name: Log in to Docker Hub
+        id: dockerhub_login
         uses: docker/login-action@v3.6.0
         with:
           username: ${{ secrets.DOCKERHUB_OSS_USERNAME }}
           password: ${{ secrets.DOCKERHUB_OSS_TOKEN }}
+
+      # Docker Hub answers every credential problem with the same opaque
+      # "unauthorized: incorrect username or password". This turns that into the actual
+      # candidate causes, ranked. The job still fails — this only annotates it.
+      - name: Diagnose Docker Hub login failure
+        if: failure() && steps.dockerhub_login.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo "### Docker Hub rejected the credentials"
+            echo
+            echo "The secrets are present and whitespace-clean (the preflight passed), so the"
+            echo "**values** are being refused. Ordered by what has actually happened here:"
+            echo
+            echo "1. \`DOCKERHUB_OSS_TOKEN\` is **expired, revoked, or belongs to a different"
+            echo "   account** than the username. This was the cause of the 2026-07-28 outage"
+            echo "   (run 30396576895) — replacing the token alone fixed it. Check this first."
+            echo "2. An **account password** was used instead of a personal access token. Password"
+            echo "   login fails outright when 2FA is enabled on the account."
+            echo "3. \`DOCKERHUB_OSS_USERNAME\` is set to the **organization** name"
+            echo "   (\`arthurplatform\`). An org is not a login identity — authenticate as a *user"
+            echo "   account that is a member of* the org, whose token can push to"
+            echo "   \`arthurplatform/genai-engine-shield-migration-gpu\`."
+            echo "4. An **email address** was used instead of the Docker Hub username."
+            echo
+            echo "Verify the exact pair locally before re-running:"
+            echo
+            echo '```'
+            echo 'echo "$TOKEN" | docker login -u "$USERNAME" --password-stdin'
+            echo '```'
+            echo
+            echo "A read-only token is enough to *log in* but will fail later at push, so confirm"
+            echo "the token has **Read & Write** scope."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Docker Hub rejected the credentials — see the job summary for the ranked causes."
 
       # GITLAB_UNIFY_FRONTEND_TOKEN is REQUIRED — the ui-build stage exits 1 without it
       # (private @arthur/* packages). The analytics/anti-abuse keys are optional; when
