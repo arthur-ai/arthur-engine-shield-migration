@@ -73,10 +73,13 @@ jobs:
         run: |
           set -euo pipefail
           # Precedence: per-image pinned tag > manual override > <version>-dev.
+          # set-version already appends `-dev` when the ref is not `main`, so strip it before
+          # re-appending — otherwise a manual dispatch from a branch asks for `X-dev-dev`.
+          BASE="${VERSION%-dev}"
           if [ -n "${PINNED}" ]; then
             TAG="${PINNED}"
           else
-            TAG="${OVERRIDE:-${VERSION}-dev}"
+            TAG="${OVERRIDE:-${BASE}-dev}"
           fi
           echo "Scanning tag: ${TAG}"
           echo "value=${TAG}" >> "$GITHUB_OUTPUT"
