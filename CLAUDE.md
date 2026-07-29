@@ -435,11 +435,20 @@ Read this section before merging upstream — every item below has already cost 
 
 ```bash
 git fetch upstream --prune
-git merge upstream/dev          # upstream/dev is the sync source, not upstream/main
+git merge upstream/dev          # day-to-day sync source
 ```
+
+`upstream/dev` is the usual source. At release time `upstream/main` is a **superset** of `dev` (each
+release lands on `main` as a `Increment arthur-engine version (#N)` merge commit on top of the dev
+history), so merging `upstream/main` brings the fork level with both — check with
+`git merge-base --is-ancestor upstream/dev upstream/main` before choosing.
 
 Then open a PR into `main`. CI only triggers on push to `main`/`dev` and PRs targeting them, so a
 feature-branch push alone runs **nothing** — without a PR the sync sits unvalidated.
+
+> **Merge the sync PR with a merge commit. Never squash, never rebase.** See the release-pipeline
+> guard below for why: a squash or rebase can put an upstream `Increment arthur-engine version`
+> message at the head of `main`, which is the trigger the upstream release pipeline keys on.
 
 ### Recurring conflicts and their standing resolutions
 
@@ -480,7 +489,33 @@ These reappear on most syncs. The resolutions are deliberate; do not "fix" them 
    changelog job regenerates the spec and diffs it, and the ml-engine client is generated from it,
    so a misordered resolution fails CI.
 
-4. **`./version` — always take upstream's.** Upstream owns it via its "Increment arthur-engine
+4. **The release-pipeline guard in `.github/workflows/arthur-engine-workflow.yml` — keep it.**
+   Thirteen jobs in that workflow publish or deploy to Arthur's **official** channels: the
+   `arthurplatform/genai-engine-cpu|gpu` and `ml-engine` images, the `genai-engine-models-*` images,
+   CloudFormation templates, SBOMs, Helm charts, git tags, and an ECS deploy. Upstream gates them on
+   `contains(github.event.head_commit.message, 'Increment arthur-engine version') && github.ref ==
+   refs/heads/main|dev`. This fork's default branch **is** `refs/heads/main`, so that message check
+   was the only thing standing between a fork commit and upstream's released artifacts — and the
+   fork's Docker Hub credentials can push to that namespace. Each of those 13 gates therefore also
+   requires `github.repository == 'arthur-ai/arthur-engine'`. Upstream does not have this line, so
+   it conflicts whenever upstream edits a gate; **always keep the guard.** Verify after a sync:
+
+   ```bash
+   python3 -c "
+   import yaml; d=yaml.safe_load(open('.github/workflows/arthur-engine-workflow.yml'))
+   bad=[k for k,v in d['jobs'].items()
+        if 'Increment arthur-engine version' in str(v.get('if','')) 
+        and \"github.repository == 'arthur-ai/arthur-engine'\" not in str(v.get('if',''))]
+   print('UNGUARDED RELEASE JOBS:', bad or 'none')"
+   ```
+
+   Related quirk, harmless but confusing: upstream's model-upload rebuild check resolves its baseline
+   with `git log --first-parent --grep='Increment arthur-engine version' --skip=1 -n 1`. That assumes
+   upstream's topology, where releases sit on `main`'s first-parent line. Here version bumps arrive
+   *inside* sync merge commits, so `--first-parent` never sees them and the baseline resolves to an
+   ancient commit, making that check's diff always non-empty. The guard above makes it moot.
+
+5. **`./version` — always take upstream's.** Upstream owns it via its "Increment arthur-engine
    version" commits, and it is what tags the published image (below).
 
 ### Verifying a sync actually landed
