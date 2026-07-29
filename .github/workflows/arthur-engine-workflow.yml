@@ -392,6 +392,7 @@ jobs:
   build-genai-engine-docker-images:
     environment: shared-protected-branch-secrets
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -465,6 +466,7 @@ jobs:
   build-ml-engine-docker-images:
     environment: shared-protected-branch-secrets
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -546,6 +548,7 @@ jobs:
   check-models-updates:
     environment: shared-protected-branch-secrets
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -554,6 +557,10 @@ jobs:
       current_hash: ${{ steps.check-updates.outputs.current_hash }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history so we can diff the model-upload build inputs against the
+          # previous release commit (see the build-inputs change check below).
+          fetch-depth: 0
       - uses: ./.github/workflows/composite-actions/setup-git
         with:
           safe-directory: ${{ runner.workspace }}
@@ -580,12 +587,42 @@ jobs:
               break
             fi
           done
+          # Force a rebuild when the files baked into the model-upload image change
+          # (Dockerfile, Python dependencies, or the entrypoint scripts) even if the
+          # HuggingFace models are unchanged. Without this, a dependency/Dockerfile
+          # change (e.g. a security bump) is silently re-tagged onto the stale image
+          # instead of rebuilt, so the fix never ships to the -s3/-fs images.
+          #
+          # Baseline = the version commit that produced the currently-published image,
+          # found by walking THIS branch's own mainline (--first-parent) back to the
+          # previous one. --first-parent is load-bearing:
+          #   - dev: version bumps are committed directly to dev, so they sit on the
+          #     first-parent line; --skip=1 -n 1 picks the previous dev bump.
+          #   - main: each release lands as a dev->main *merge commit* titled
+          #     "Increment arthur-engine version (#N)", so --first-parent follows main's
+          #     release line and the baseline is the previous RELEASE. Without
+          #     --first-parent the grep would instead return a dev bump swept in by the
+          #     merge (whose tree equals HEAD's), making the diff empty and the check a
+          #     no-op on the production branch.
+          PREV_VERSION_COMMIT=$(git log --first-parent --grep='Increment arthur-engine version' --format='%H' --skip=1 -n 1)
+          if [ -n "$PREV_VERSION_COMMIT" ]; then
+            CHANGED=$(git diff --name-only "$PREV_VERSION_COMMIT" HEAD -- \
+              Dockerfile pyproject.toml uv.lock download_models.py upload_models.py)
+            if [ -n "$CHANGED" ]; then
+              echo "::notice::model-upload build inputs changed since ${PREV_VERSION_COMMIT} - forcing model image rebuild:"
+              echo "$CHANGED"
+              echo "has_updates=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "::notice::no previous version-bump commit found - relying on model/bootstrap checks only"
+          fi
 
   build-genai-engine-models-docker-image:
     uses: ./.github/workflows/build-ecs-model-upload.yml
     needs: [check-models-updates]
     if: |
       needs.check-models-updates.outputs.has_updates == 'true' &&
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     with:
@@ -598,6 +635,7 @@ jobs:
     environment: shared-protected-branch-secrets
     if: |
       needs.check-models-updates.outputs.has_updates == 'false' &&
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -637,6 +675,7 @@ jobs:
     needs: [check-models-updates]
     if: |
       needs.check-models-updates.outputs.has_updates == 'true' &&
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     with:
@@ -649,6 +688,7 @@ jobs:
     environment: shared-protected-branch-secrets
     if: |
       needs.check-models-updates.outputs.has_updates == 'false' &&
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -687,6 +727,7 @@ jobs:
     uses: ./.github/workflows/build-gcp-model-upload.yml
     needs: [check-models-updates]
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     with:
@@ -698,6 +739,7 @@ jobs:
     needs: [build-genai-engine-docker-images, build-ml-engine-docker-images]
     environment: shared-protected-branch-secrets
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -751,6 +793,7 @@ jobs:
       !cancelled() &&
       needs.build-genai-engine-docker-images.result == 'success' &&
       needs.build-ml-engine-docker-images.result == 'success' &&
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -832,7 +875,8 @@ jobs:
     needs: [build-genai-engine-docker-images, build-ml-engine-docker-images]
     environment: shared-protected-branch-secrets
     if: |
-      (contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
+      (github.repository == 'arthur-ai/arthur-engine' &&
+      contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'))
     runs-on: ubuntu-latest
     permissions:
@@ -866,6 +910,7 @@ jobs:
   push-tag:
     needs: [push-all-cfts, push-all-helm-charts]
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
@@ -885,6 +930,7 @@ jobs:
   deploy-genai-engine-cloudformation:
     needs: [push-tag]
     if: |
+      github.repository == 'arthur-ai/arthur-engine' &&
       contains(github.event.head_commit.message, 'Increment arthur-engine version') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
