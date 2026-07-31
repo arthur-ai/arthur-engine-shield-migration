@@ -492,6 +492,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     step_start = time.monotonic()
     default_rules = shield_get("/api/v2/default_rules")
 
+    embedded_rules = []  # rules taken from task payloads; archived flag unknown
     if task_ids:
         # /rules/search has no task filter, but each selected task embeds its
         # full rule objects — so task-scoped rules come from there instead.
@@ -507,6 +508,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
                 task_rules.append(
                     {k: v for k, v in rule.items() if k != "enabled"},
                 )
+        embedded_rules = list(task_rules)
     else:
         task_rules = shield_paginate(
             "/api/v2/rules/search",
@@ -521,17 +523,35 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     # rules still linked to live tasks). Insert those from the embedded rule
     # objects so the link insert below can never hit a missing rule.
     known_rule_ids = {rule["id"] for rule in all_rules}
+    link_target_count = 0
     for task in tasks:
         for rule in task.get("rules", []):
             if rule["id"] in known_rule_ids:
                 continue
             known_rule_ids.add(rule["id"])
-            all_rules.append({k: v for k, v in rule.items() if k != "enabled"})
+            embedded_rule = {k: v for k, v in rule.items() if k != "enabled"}
+            all_rules.append(embedded_rule)
+            embedded_rules.append(embedded_rule)
+            link_target_count += 1
+
+    # Embedded rule objects don't carry the archived flag; any of them the
+    # active-rules search doesn't return is archived in Shield.
+    if embedded_rules:
+        active_rules = shield_paginate(
+            "/api/v2/rules/search",
+            {"rule_ids": [rule["id"] for rule in embedded_rules]},
+            "count",
+            "rules",
+        )
+        active_ids = {rule["id"] for rule in active_rules}
+        for rule in embedded_rules:
+            if rule["id"] not in active_ids:
+                rule["archived"] = True
 
     record_step_timing("config", "Fetch rules", time.monotonic() - step_start)
     print(
         f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped "
-        f"+ {len(all_rules) - len(default_rules) - len(task_rules)} link-target rules",
+        f"+ {link_target_count} link-target rules",
     )
 
     step_start = time.monotonic()
@@ -1044,6 +1064,7 @@ def resolve_conflict(ckpt, from_dt, to_dt, to_is_now, task_ids=None):
     ckpt.state["to_dt"] = new_to
     ckpt.state["inference_page"] = 0
     ckpt.state["feedback_page"] = 0
+    ckpt.state["archived_rules_migrated"] = False
     ckpt._save()
     return ckpt, prior_to, to_dt, prompt_phases(ALL_PHASES)
 
