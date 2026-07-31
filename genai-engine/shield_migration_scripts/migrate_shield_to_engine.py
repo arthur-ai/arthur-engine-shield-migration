@@ -509,22 +509,10 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
             "rules",
         )
 
-    # Archived rules are always migrated in full: the selected tasks' old rule
-    # results may reference rules that have since been archived, and Shield
-    # offers no way to filter archived rules by task.
-    archived_rules = shield_paginate(
-        "/api/v2/rules/search",
-        {"include_archived": True},
-        "count",
-        "rules",
-    )
-    for rule in archived_rules:
-        rule["archived"] = True
-    all_rules = default_rules + task_rules + archived_rules
+    all_rules = default_rules + task_rules
     record_step_timing("config", "Fetch rules", time.monotonic() - step_start)
     print(
-        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped "
-        f"+ {len(archived_rules)} archived rules",
+        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped rules",
     )
 
     step_start = time.monotonic()
@@ -598,6 +586,36 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
 # ── Phase 2: Inferences ───────────────────────────────────────────────────────
 
 
+def migrate_archived_rules(ckpt: Checkpoint):
+    """Archived rules are migrated in full at the start of the inferences
+    phase: historical rule results may reference rules that have since been
+    archived, and Shield cannot filter archived rules by task."""
+    step_start = time.monotonic()
+    archived_rules = shield_paginate(
+        "/api/v2/rules/search",
+        {"include_archived": True},
+        "count",
+        "rules",
+    )
+    for rule in archived_rules:
+        rule["archived"] = True
+    resp = engine_post("/api/v1/migration/rules/bulk", {"rules": archived_rules})
+    ckpt.record_migrated_rules(
+        [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+    )
+    record_step_timing(
+        "inferences",
+        "Insert archived rules",
+        time.monotonic() - step_start,
+    )
+    inserted = len(resp.get("rules", []))
+    print(
+        f"  Archived rules: "
+        f"    {inserted} inserted"
+        f"    {len(archived_rules) - inserted} skipped (already existed)",
+    )
+
+
 def fetch_shield_inference_pages(inf_params, cursor, page_queue, errors):
     """Fetcher: claim pages from the shared cursor until the end page is known."""
     try:
@@ -642,6 +660,8 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
         f"(from={from_dt.date() if from_dt else 'beginning'} "
         f"to={to_dt.date() if to_dt else 'now'}{scope_note}) ===",
     )
+
+    migrate_archived_rules(ckpt)
 
     # /api/v2/migration/inferences/query returns the full inference subtree with
     # real rule-result/detail IDs and token counts intact, so inferences are
