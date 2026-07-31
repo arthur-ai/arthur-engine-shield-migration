@@ -365,6 +365,7 @@ class Checkpoint:
             self.state.setdefault("migrated_taskless_inference_ids", [])
             self.state.setdefault("migrated_rule_ids", [])
             self.state.setdefault("task_ids", [])
+            self.state.setdefault("archived_rules_migrated", False)
         else:
             self.state = {
                 "from_dt": None,
@@ -376,6 +377,7 @@ class Checkpoint:
                 "migrated_task_ids": [],
                 "migrated_taskless_inference_ids": [],
                 "migrated_rule_ids": [],
+                "archived_rules_migrated": False,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -427,6 +429,10 @@ class Checkpoint:
             if rule_id not in existing:
                 self.state["migrated_rule_ids"].append(rule_id)
                 existing.add(rule_id)
+        self._save()
+
+    def set_archived_rules_migrated(self):
+        self.state["archived_rules_migrated"] = True
         self._save()
 
     def record_taskless_inferences(self, inference_ids):
@@ -510,9 +516,22 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
         )
 
     all_rules = default_rules + task_rules
+
+    # Tasks may link to rules missing from the searches above (e.g. archived
+    # rules still linked to live tasks). Insert those from the embedded rule
+    # objects so the link insert below can never hit a missing rule.
+    known_rule_ids = {rule["id"] for rule in all_rules}
+    for task in tasks:
+        for rule in task.get("rules", []):
+            if rule["id"] in known_rule_ids:
+                continue
+            known_rule_ids.add(rule["id"])
+            all_rules.append({k: v for k, v in rule.items() if k != "enabled"})
+
     record_step_timing("config", "Fetch rules", time.monotonic() - step_start)
     print(
-        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped rules",
+        f"  Fetched {len(default_rules)} default + {len(task_rules)} task-scoped "
+        f"+ {len(all_rules) - len(default_rules) - len(task_rules)} link-target rules",
     )
 
     step_start = time.monotonic()
@@ -590,6 +609,10 @@ def migrate_archived_rules(ckpt: Checkpoint):
     """Archived rules are migrated in full at the start of the inferences
     phase: historical rule results may reference rules that have since been
     archived, and Shield cannot filter archived rules by task."""
+    if ckpt.state.get("archived_rules_migrated"):
+        print("  Archived rules already migrated — skipping.")
+        return
+
     step_start = time.monotonic()
     archived_rules = shield_paginate(
         "/api/v2/rules/search",
@@ -599,16 +622,28 @@ def migrate_archived_rules(ckpt: Checkpoint):
     )
     for rule in archived_rules:
         rule["archived"] = True
-    resp = engine_post("/api/v1/migration/rules/bulk", {"rules": archived_rules})
-    ckpt.record_migrated_rules(
-        [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+    record_step_timing(
+        "inferences",
+        "Fetch archived rules",
+        time.monotonic() - step_start,
     )
+
+    step_start = time.monotonic()
+    inserted = 0
+    for start in range(0, len(archived_rules), ENGINE_BATCH_SIZE):
+        chunk = archived_rules[start : start + ENGINE_BATCH_SIZE]
+        resp = engine_post("/api/v1/migration/rules/bulk", {"rules": chunk})
+        ckpt.record_migrated_rules(
+            [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+        )
+        inserted += len(resp.get("rules", []))
+
     record_step_timing(
         "inferences",
         "Insert archived rules",
         time.monotonic() - step_start,
     )
-    inserted = len(resp.get("rules", []))
+    ckpt.set_archived_rules_migrated()
     print(
         f"  Archived rules: "
         f"    {inserted} inserted"
@@ -661,6 +696,7 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
         f"to={to_dt.date() if to_dt else 'now'}{scope_note}) ===",
     )
 
+    phase_start = time.monotonic()
     migrate_archived_rules(ckpt)
 
     # /api/v2/migration/inferences/query returns the full inference subtree with
@@ -687,9 +723,8 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     skipped = 0
     total_count = 0
     wanted_tasks = set(task_ids) if task_ids else None
-    phase_start = time.monotonic()
     processed_this_run = 0
-    chunk_timer = ChunkTimer(phase_start)
+    chunk_timer = ChunkTimer(time.monotonic())
 
     # Fetcher pool prefetches Shield pages while workers post earlier pages.
     page_queue: queue.Queue = queue.Queue(maxsize=PREFETCH_PAGES)
