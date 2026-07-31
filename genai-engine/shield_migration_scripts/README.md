@@ -247,19 +247,36 @@ python migrate_shield_to_engine.py --task-ids <task_id_1> <task_id_2> --from-dat
 > Progress is checkpointed per phase, so re-running with the same window skips
 > work that already completed.
 
+> **Archived rules** are migrated at the **start of the inferences phase**, not
+> during config, because what needs them is historical rule results: a
+> `prompt_rule_results.rule_id` / `response_rule_results.rule_id` may point at a
+> rule that has since been archived, and those rows cannot be inserted before the
+> rule exists. They are always migrated in full — Shield cannot filter archived
+> rules by task. The step is checkpointed separately
+> (`archived_rules_migrated`), so resuming an interrupted inferences phase does
+> not refetch them.
+>
+> Config still inserts any archived rule that a **live task links to**, since the
+> task–rule link would otherwise reference a rule that does not exist yet. Those
+> rules come from the task payload, which carries no archived flag, so the script
+> asks Shield which of them are still active and marks the rest archived — a rule
+> archived in Shield stays archived in the Engine and is not evaluated against new
+> traffic.
+
 ### Per-task migration (`--task-ids`)
 
 `--task-ids` scopes the run to specific tasks, so a large migration can be done
 one task (or a few tasks) at a time:
 
 - **Config** — only the selected tasks, their rules, and their task–rule links
-  are migrated. Default rules and archived rules are still migrated in full:
-  default rules are global, and the selected tasks' historical rule results may
-  reference rules that have since been archived (Shield cannot filter archived
-  rules by task).
+  are migrated. Default rules are still migrated in full, because they are
+  global.
 - **Inferences** — filtered by task in Shield's migration export endpoint, so
   only the selected tasks' inferences are fetched. Task-less inferences are
-  never migrated by a task-scoped run.
+  never migrated by a task-scoped run. Archived rules are migrated in full at
+  the start of this phase regardless of task scope: the selected tasks'
+  historical rule results may reference rules that have since been archived, and
+  Shield cannot filter archived rules by task.
 - **Feedback** — filtered server-side by Shield, so only the selected tasks'
   feedback is fetched.
 
@@ -277,11 +294,18 @@ back, so keep the checkpoint file around after a run completes.
 ### Timing report (`--timing`)
 
 With `--timing`, a report is printed at the end of the run. The config phase
-shows the duration of each step; the inferences and feedback phases show total
-time, per-record average, and the **measured** wall-clock time of each full
-10k / 100k / 1m chunk (a chunk line appears only once at least one full chunk
-of that size completed). Chunks are measured for records processed in the
-current run only, so a resumed run's numbers reflect that run alone.
+shows the duration of each step; the inferences phase shows its archived-rule
+steps followed by total time, per-record average, and the **measured**
+wall-clock time of each full 10k / 100k / 1m chunk (a chunk line appears only
+once at least one full chunk of that size completed); the feedback phase shows
+the same totals without the step lines. Chunks are measured for records
+processed in the current run only, so a resumed run's numbers reflect that run
+alone — and on a resume the archived-rule steps are absent, because that work is
+already checkpointed as done.
+
+The inferences `Total` includes the archived-rule steps, so on a first run the
+`Average per inference` carries that fixed cost too. It is negligible on a large
+run and can be misleading on a very small one.
 
 ```
 === Timing Report ===
@@ -295,6 +319,8 @@ config phase:
   Total: 8.4s
 
 inferences phase:
+  Fetch archived rules: 2.1s
+  Insert archived rules: 4.8s
   Total: 48m 02s (1,010,260 inferences)
   Average per inference: 2.85 ms
   Per 10k inferences (measured): avg 28.5s, fastest 13.0s, slowest 1m 38s (101 full chunks)
