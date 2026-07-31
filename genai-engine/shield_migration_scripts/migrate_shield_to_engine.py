@@ -352,6 +352,10 @@ class Checkpoint:
       feedback_page           — next Shield feedback page to fetch (starts at 0)
       migrated_task_ids       — task IDs inserted into the Engine (for cleanup)
       migrated_rule_ids       — rule IDs inserted into the Engine (for cleanup)
+      migrated_taskless_inference_ids — inserted inferences with no task, which a
+                                task-scoped cleanup cannot reach (for cleanup)
+      archived_rules_migrated — archived rules finished migrating, so a resumed
+                                inferences phase skips refetching them
       started_at / last_updated_at — ISO timestamps
     """
 
