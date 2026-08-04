@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -329,8 +330,8 @@ def task_scope_slug(task_ids) -> str:
 
 def checkpoint_path(from_dt, to_dt, task_ids=None) -> str:
     window_slug = (
-        f"{from_dt.date() if from_dt else 'all'}"
-        f"_to_{to_dt.date() if to_dt else 'now'}"
+        f"{from_dt.strftime('%Y-%m-%dT%H-%M-%S') if from_dt else 'all'}"
+        f"_to_{to_dt.strftime('%Y-%m-%dT%H-%M-%S') if to_dt else 'now'}"
     )
     return (
         f"{CHECKPOINT_DIR}/migration_state_{window_slug}"
@@ -1333,19 +1334,21 @@ def main():
     if args.recover:
         # Recovery bypasses the interactive conflict prompts: it writes the
         # verified IDs into the window's save file (creating it if missing).
-        ckpt = Checkpoint(args.resume or checkpoint_path(from_dt, to_dt, task_ids))
-        if args.resume:
+        # An existing file is backed up first and keeps its stored window.
+        recover_path = args.resume or checkpoint_path(from_dt, to_dt, task_ids)
+        recover_existing = os.path.exists(recover_path)
+        if recover_existing:
+            shutil.copyfile(recover_path, f"{recover_path}.bak")
+            print(f"Backed up existing save file to: {recover_path}.bak")
+        ckpt = Checkpoint(recover_path)
+        if recover_existing:
             stored_from = ckpt.state.get("from_dt")
             stored_to = ckpt.state.get("to_dt")
             from_dt = datetime.fromisoformat(stored_from) if stored_from else None
             to_dt = datetime.fromisoformat(stored_to) if stored_to else None
             task_ids = ckpt.state.get("task_ids") or None
         else:
-            # The requested window is authoritative in recovery — overwrite the
-            # stored one directly, set_window's mismatch guard doesn't apply.
-            ckpt.state["from_dt"] = from_dt.isoformat() if from_dt else None
-            ckpt.state["to_dt"] = to_dt.isoformat() if to_dt else None
-            ckpt._save()
+            ckpt.set_window(from_dt, to_dt)
             ckpt.set_task_scope(task_ids)
         if "config" in phases:
             migrate_config(ckpt, task_ids, recover=True)
