@@ -39,7 +39,13 @@ ENGINE_BASE_URL = os.getenv("ENGINE_BASE_URL")
 ENGINE_API_KEY = os.getenv("ENGINE_API_KEY")
 ENGINE_ORG_ID = os.getenv("ENGINE_ORG_ID")
 
-CHECKPOINT_DIR = os.getenv("MIGRATION_CHECKPOINT_DIR", default="migration_states")
+CHECKPOINT_DIR = os.getenv(
+    "MIGRATION_CHECKPOINT_DIR",
+    default=os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "migration_states",
+    ),
+)
 
 SHIELD_PAGE_SIZE = int(
     os.getenv("SHIELD_PAGE_SIZE", default=4999),
