@@ -254,6 +254,38 @@ def compare(label, shield_n, engine_n):
     return f"  {status:<10} {label:<28} shield={fmt(shield_n)}  engine={fmt(engine_n)}"
 
 
+def shield_paginate_feedback(params):
+    """Fetch all feedback rows from Shield's GET query. Pages start at 0."""
+    page, rows = 0, []
+    while True:
+        resp = shield_get(
+            "/api/v2/feedback/query",
+            {**params, "page_size": SHIELD_PAGE_SIZE, "page": page},
+        )
+        batch = resp.get("feedback", [])
+        rows.extend(batch)
+        if not batch or len(rows) >= resp.get("total_count", 0):
+            return rows
+        page += 1
+
+
+def parent_inference_in_window(inference_id, from_dt, to_dt):
+    """True when the Shield inference exists and was created inside the window."""
+    resp = shield_get(
+        "/api/v2/inferences/query",
+        {"inference_id": inference_id, "page_size": 1, "page": 0},
+    )
+    inferences = resp.get("inferences", [])
+    if not inferences:
+        return False
+    created = inferences[0].get("created_at", 0) / 1000
+    if from_dt and created < from_dt.timestamp():
+        return False
+    if to_dt and created >= to_dt.timestamp():
+        return False
+    return True
+
+
 def verify_api(
     from_dt,
     to_dt,
@@ -290,7 +322,7 @@ def verify_api(
         window_params["end_time"] = to_dt.isoformat()
     count_page = {"page_size": 1, "page": 0}
     inf_params = {**window_params, **count_page}
-    fb_params = {**window_params, **count_page}
+    fb_params = dict(window_params)
     if task_ids:
         inf_params["task_ids"] = task_ids
         fb_params["task_id"] = task_ids
@@ -367,19 +399,39 @@ def verify_api(
                 None,
                 inf_params,
             )
+        feedback_chunks = []
         if "feedback" in phases_completed:
-            futures["shield_feedback"] = executor.submit(
-                shield_get,
-                "/api/v2/feedback/query",
-                fb_params,
-            )
-            futures["engine_feedback"] = executor.submit(
-                engine_call,
-                "GET",
-                "/api/v2/feedback/query",
-                None,
-                fb_params,
-            )
+            # Scope both sides to migrated tasks (and task-less parents by
+            # inference_id) so archived-task feedback never enters the counts.
+            task_id_list = migrated_task_ids or []
+            taskless_list = taskless_inference_ids or []
+            feedback_scopes = []
+            for start in range(0, len(task_id_list), 100):
+                feedback_scopes.append(
+                    {"task_id": task_id_list[start : start + 100]},
+                )
+            for start in range(0, len(taskless_list), 100):
+                feedback_scopes.append(
+                    {"inference_id": taskless_list[start : start + 100]},
+                )
+            if not feedback_scopes:
+                feedback_scopes = [{}]
+            for scope in feedback_scopes:
+                feedback_chunks.append(
+                    (
+                        executor.submit(
+                            shield_paginate_feedback,
+                            {**fb_params, **scope},
+                        ),
+                        executor.submit(
+                            engine_call,
+                            "GET",
+                            "/api/v2/feedback/query",
+                            None,
+                            {**fb_params, **scope, **count_page},
+                        ),
+                    ),
+                )
         taskless_futures = []
         if "inferences" in phases_completed and taskless_inference_ids:
             taskless_futures = [
@@ -442,8 +494,28 @@ def verify_api(
     # ── Feedback ──────────────────────────────────────────────────────────
     if "feedback" in phases_completed:
         lines.append("Feedback")
-        s = results["shield_feedback"].get("total_count", 0)
-        e = results["engine_feedback"].get("total_count", 0)
+        e = sum(ef.result().get("total_count", 0) for _, ef in feedback_chunks)
+        shield_rows = []
+        for sf, _ in feedback_chunks:
+            shield_rows.extend(sf.result())
+        # The feedback API can't filter on the parent inference's window, so
+        # check each row's parent the way SQL mode's join does.
+        parent_ids = {row["inference_id"] for row in shield_rows}
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            parents_in_window = {
+                inference_id: executor.submit(
+                    parent_inference_in_window,
+                    inference_id,
+                    from_dt,
+                    to_dt,
+                )
+                for inference_id in parent_ids
+            }
+            s = sum(
+                1
+                for row in shield_rows
+                if parents_in_window[row["inference_id"]].result()
+            )
         all_match = all_match and s == e
         lines.append(compare("inference_feedback", s, e))
         lines.append("")
