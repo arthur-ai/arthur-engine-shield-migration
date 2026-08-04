@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -39,7 +40,13 @@ ENGINE_BASE_URL = os.getenv("ENGINE_BASE_URL")
 ENGINE_API_KEY = os.getenv("ENGINE_API_KEY")
 ENGINE_ORG_ID = os.getenv("ENGINE_ORG_ID")
 
-CHECKPOINT_DIR = os.getenv("MIGRATION_CHECKPOINT_DIR", default="migration_states")
+CHECKPOINT_DIR = os.getenv(
+    "MIGRATION_CHECKPOINT_DIR",
+    default=os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "migration_states",
+    ),
+)
 
 SHIELD_PAGE_SIZE = int(
     os.getenv("SHIELD_PAGE_SIZE", default=4999),
@@ -140,16 +147,36 @@ def shield_paginate(path, body, count_key, items_key):
 # ── Engine API helpers ────────────────────────────────────────────────────────
 
 
-def engine_post(path, body):
+def engine_call(method, path, body=None, params=None):
     r = request_with_retry(
-        "POST",
+        method,
         f"{ENGINE_BASE_URL}{path}",
         json=body,
+        params=params or {},
         headers={
             "Authorization": f"Bearer {ENGINE_API_KEY}",
         },
     )
     return r.json()
+
+
+def engine_paginate(path, body, count_key, items_key):
+    """Fetch all pages from an Engine POST search endpoint. Pages start at 0."""
+    page, all_items = 0, []
+    while True:
+        resp = engine_call(
+            "POST",
+            path,
+            body=body,
+            params={"page_size": SHIELD_PAGE_SIZE, "page": page},
+        )
+        total = resp.get(count_key, 0)
+        batch = resp.get(items_key, [])
+        all_items.extend(batch)
+        if len(all_items) >= total or not batch:
+            break
+        page += 1
+    return all_items
 
 
 def engine_post_batches(path, items_key, items):
@@ -167,7 +194,8 @@ def engine_post_batches(path, items_key, items):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = [
             executor.submit(
-                engine_post,
+                engine_call,
+                "POST",
                 path,
                 {items_key: chunk, "org_id": ENGINE_ORG_ID},
             )
@@ -302,8 +330,8 @@ def task_scope_slug(task_ids) -> str:
 
 def checkpoint_path(from_dt, to_dt, task_ids=None) -> str:
     window_slug = (
-        f"{from_dt.date() if from_dt else 'all'}"
-        f"_to_{to_dt.date() if to_dt else 'now'}"
+        f"{from_dt.strftime('%Y-%m-%dT%H-%M-%S') if from_dt else 'all'}"
+        f"_to_{to_dt.strftime('%Y-%m-%dT%H-%M-%S') if to_dt else 'now'}"
     )
     return (
         f"{CHECKPOINT_DIR}/migration_state_{window_slug}"
@@ -472,8 +500,8 @@ class Checkpoint:
 # ── Phase 1: Config (tasks + rules) ──────────────────────────────────────────
 
 
-def migrate_config(ckpt: Checkpoint, task_ids=None):
-    if ckpt.phase_completed("config"):
+def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
+    if not recover and ckpt.phase_completed("config"):
         print("[config] Already completed — skipping.")
         return
 
@@ -558,8 +586,51 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
         f"+ {link_target_count} link-target rules",
     )
 
+    # Recover mode: verify what already exists in the Engine and record it in
+    # the save file. Nothing is written to the Engine.
+    if recover:
+        step_start = time.monotonic()
+        engine_task_ids = {
+            t["id"]
+            for t in engine_paginate("/api/v2/tasks/search", {}, "count", "tasks")
+        }
+        recovered_tasks = [t["id"] for t in tasks if t["id"] in engine_task_ids]
+        ckpt.record_migrated_tasks(recovered_tasks)
+        print(f"  Tasks: {len(recovered_tasks)}/{len(tasks)} verified in Engine")
+
+        engine_rule_ids = {
+            r["id"]
+            for r in engine_paginate(
+                "/api/v2/rules/search",
+                {"include_archived": True},
+                "count",
+                "rules",
+            )
+        }
+
+        recovered_rules = [r["id"] for r in all_rules if r["id"] in engine_rule_ids]
+        ckpt.record_migrated_rules(recovered_rules)
+        print(f"  Rules: {len(recovered_rules)}/{len(all_rules)} verified in Engine")
+
+        if len(recovered_tasks) == len(tasks) and len(recovered_rules) == len(
+            all_rules,
+        ):
+            ckpt.phase_done("config")
+            print("  All config resources verified — phase marked completed")
+
+        record_step_timing(
+            "config",
+            "Verify in Engine",
+            time.monotonic() - step_start,
+        )
+        record_phase_timing("config", time.monotonic() - phase_start)
+
+        print("=== Phase 1: Recovered ===")
+        print()
+        return
+
     step_start = time.monotonic()
-    resp = engine_post("/api/v1/migration/rules/bulk", {"rules": all_rules})
+    resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": all_rules})
     record_step_timing("config", "Insert rules", time.monotonic() - step_start)
     ckpt.record_migrated_rules(
         [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
@@ -575,7 +646,8 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
     # separately below so the Engine endpoint does NOT auto-link rules on insert.
     task_rows = [{k: v for k, v in t.items() if k != "rules"} for t in tasks]
     step_start = time.monotonic()
-    resp = engine_post(
+    resp = engine_call(
+        "POST",
         "/api/v1/migration/tasks/bulk",
         {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
     )
@@ -604,7 +676,8 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
                 },
             )
     step_start = time.monotonic()
-    resp = engine_post(
+    resp = engine_call(
+        "POST",
         "/api/v1/migration/task_rule_links/bulk",
         {"task_to_rule_links": links},
     )
@@ -629,11 +702,11 @@ def migrate_config(ckpt: Checkpoint, task_ids=None):
 # ── Phase 2: Inferences ───────────────────────────────────────────────────────
 
 
-def migrate_archived_rules(ckpt: Checkpoint):
+def migrate_archived_rules(ckpt: Checkpoint, recover=False):
     """Archived rules are migrated in full at the start of the inferences
     phase: historical rule results may reference rules that have since been
     archived, and Shield cannot filter archived rules by task."""
-    if ckpt.state.get("archived_rules_migrated"):
+    if not recover and ckpt.state.get("archived_rules_migrated"):
         print("  Archived rules already migrated — skipping.")
         return
 
@@ -652,11 +725,38 @@ def migrate_archived_rules(ckpt: Checkpoint):
         time.monotonic() - step_start,
     )
 
+    if recover:
+        print("  Recovering archived rules...")
+        step_start = time.monotonic()
+        engine_rule_ids = {
+            r["id"]
+            for r in engine_paginate(
+                "/api/v2/rules/search",
+                {"include_archived": True},
+                "count",
+                "rules",
+            )
+        }
+        recovered = [r["id"] for r in archived_rules if r["id"] in engine_rule_ids]
+        ckpt.record_migrated_rules(recovered)
+        record_step_timing(
+            "inferences",
+            "Verify archived rules in Engine",
+            time.monotonic() - step_start,
+        )
+
+        if len(recovered) == len(archived_rules):
+            ckpt.set_archived_rules_migrated()
+
+        print(f"    {len(recovered)}/{len(archived_rules)} verified in Engine")
+        print()
+        return
+
     step_start = time.monotonic()
     inserted = 0
     for start in range(0, len(archived_rules), ENGINE_BATCH_SIZE):
         chunk = archived_rules[start : start + ENGINE_BATCH_SIZE]
-        resp = engine_post("/api/v1/migration/rules/bulk", {"rules": chunk})
+        resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": chunk})
         ckpt.record_migrated_rules(
             [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
         )
@@ -672,6 +772,85 @@ def migrate_archived_rules(ckpt: Checkpoint):
         f"  Archived rules: "
         f"    {inserted} inserted"
         f"    {len(archived_rules) - inserted} skipped (already existed)",
+    )
+
+
+def recover_taskless_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
+    """Scan the Shield window for task-less inferences and record the ones
+    that exist in the Engine. Writes nothing to the Engine."""
+    print("  Recovering task-less inferences...")
+    if task_ids:
+        print("    Task-scoped runs migrate none — skipping.")
+        return
+
+    inf_params: dict = {}
+    if from_dt:
+        inf_params["start_time"] = from_dt.isoformat()
+    if to_dt:
+        inf_params["end_time"] = to_dt.isoformat()
+
+    step_start = time.monotonic()
+    page_queue: queue.Queue = queue.Queue(maxsize=PREFETCH_PAGES)
+    fetch_errors: list = []
+    cursor = {"lock": threading.Lock(), "next_page": 0, "end_page": None}
+    for _ in range(SHIELD_FETCH_WORKERS):
+        threading.Thread(
+            target=fetch_shield_inference_pages,
+            args=(inf_params, cursor, page_queue, fetch_errors),
+            daemon=True,
+        ).start()
+
+    candidate_ids = []
+    active_fetchers = SHIELD_FETCH_WORKERS
+    pages_done = 0
+    total_pages = None
+    while active_fetchers:
+        item = page_queue.get()
+        if item is None:
+            active_fetchers -= 1
+            continue
+        _, batch, total = item
+        candidate_ids.extend(inf["id"] for inf in batch if not inf.get("task_id"))
+        pages_done += 1
+        if total_pages is None and total:
+            total_pages = -(-total // SHIELD_PAGE_SIZE)
+        if pages_done % 10 == 0:
+            print(
+                f"    Scanning Shield: {pages_done}/{total_pages or '?'} pages",
+                flush=True,
+            )
+    if fetch_errors:
+        raise fetch_errors[0]
+    record_step_timing(
+        "inferences",
+        "Scan for task-less inferences",
+        time.monotonic() - step_start,
+    )
+
+    step_start = time.monotonic()
+    verified_ids = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                engine_call,
+                "GET",
+                "/api/v2/inferences/query",
+                None,
+                {"inference_id": inference_id, "page_size": 1},
+            ): inference_id
+            for inference_id in candidate_ids
+        }
+        for future in as_completed(futures):
+            if future.result().get("count", 0) > 0:
+                verified_ids.append(futures[future])
+    ckpt.record_taskless_inferences(verified_ids)
+    record_step_timing(
+        "inferences",
+        "Verify task-less inferences in Engine",
+        time.monotonic() - step_start,
+    )
+    print(
+        f"    {len(verified_ids)}/{len(candidate_ids)} verified in Engine",
     )
 
 
@@ -708,8 +887,8 @@ def fetch_shield_inference_pages(inf_params, cursor, page_queue, errors):
         page_queue.put(None)
 
 
-def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
-    if ckpt.phase_completed("inferences"):
+def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None, recover=False):
+    if not recover and ckpt.phase_completed("inferences"):
         print("[inferences] Already completed — skipping.")
         return
 
@@ -721,7 +900,14 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     )
 
     phase_start = time.monotonic()
-    migrate_archived_rules(ckpt)
+    migrate_archived_rules(ckpt, recover=recover)
+
+    if recover:
+        recover_taskless_inferences(ckpt, from_dt, to_dt, task_ids)
+        record_phase_timing("inferences", time.monotonic() - phase_start)
+        print("=== Phase 2: Recovered ===")
+        print()
+        return
 
     # /api/v2/migration/inferences/query returns the full inference subtree with
     # real rule-result/detail IDs and token counts intact, so inferences are
@@ -806,7 +992,8 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
                 pending_chunks[page_no] = len(chunks)
                 for chunk in chunks:
                     future = executor.submit(
-                        engine_post,
+                        engine_call,
+                        "POST",
                         "/api/v1/migration/inferences/bulk",
                         {"inferences": chunk, "org_id": ENGINE_ORG_ID},
                     )
@@ -1118,6 +1305,12 @@ def main():
         action="store_true",
         help="Print a timing report at the end of the run",
     )
+    parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="Rebuild the save file for the selected phases by verifying what "
+        "already exists in the Engine. Writes nothing to the Engine.",
+    )
     args = parser.parse_args()
 
     # Require a window start unless resuming (then it comes from the checkpoint).
@@ -1137,6 +1330,36 @@ def main():
         phases = list(ALL_PHASES)
     else:
         phases = [args.phase]
+
+    if args.recover:
+        # Recovery bypasses the interactive conflict prompts: it writes the
+        # verified IDs into the window's save file (creating it if missing).
+        # An existing file is backed up first and keeps its stored window.
+        recover_path = args.resume or checkpoint_path(from_dt, to_dt, task_ids)
+        recover_existing = os.path.exists(recover_path)
+        if recover_existing:
+            shutil.copyfile(recover_path, f"{recover_path}.bak")
+            print(f"Backed up existing save file to: {recover_path}.bak")
+        ckpt = Checkpoint(recover_path)
+        if recover_existing:
+            stored_from = ckpt.state.get("from_dt")
+            stored_to = ckpt.state.get("to_dt")
+            from_dt = datetime.fromisoformat(stored_from) if stored_from else None
+            to_dt = datetime.fromisoformat(stored_to) if stored_to else None
+            task_ids = ckpt.state.get("task_ids") or None
+        else:
+            ckpt.set_window(from_dt, to_dt)
+            ckpt.set_task_scope(task_ids)
+        if "config" in phases:
+            migrate_config(ckpt, task_ids, recover=True)
+        if "inferences" in phases:
+            migrate_inferences(ckpt, from_dt, to_dt, task_ids, recover=True)
+        if "feedback" in phases:
+            print("[feedback] Nothing recorded in the save file for feedback.")
+        if args.timing:
+            print_timing_report()
+        print(f"\nRecovery complete. State saved to: {ckpt.path}")
+        return
 
     if args.resume:
         # Explicit resume: use the checkpoint as-is, honoring its stored window.
