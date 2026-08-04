@@ -1334,8 +1334,18 @@ def main():
         # Recovery bypasses the interactive conflict prompts: it writes the
         # verified IDs into the window's save file (creating it if missing).
         ckpt = Checkpoint(args.resume or checkpoint_path(from_dt, to_dt, task_ids))
-        if not args.resume:
-            ckpt.set_window(from_dt, to_dt)
+        if args.resume:
+            stored_from = ckpt.state.get("from_dt")
+            stored_to = ckpt.state.get("to_dt")
+            from_dt = datetime.fromisoformat(stored_from) if stored_from else None
+            to_dt = datetime.fromisoformat(stored_to) if stored_to else None
+            task_ids = ckpt.state.get("task_ids") or None
+        else:
+            # The requested window is authoritative in recovery — overwrite the
+            # stored one directly, set_window's mismatch guard doesn't apply.
+            ckpt.state["from_dt"] = from_dt.isoformat() if from_dt else None
+            ckpt.state["to_dt"] = to_dt.isoformat() if to_dt else None
+            ckpt._save()
             ckpt.set_task_scope(task_ids)
         if "config" in phases:
             migrate_config(ckpt, task_ids, recover=True)
