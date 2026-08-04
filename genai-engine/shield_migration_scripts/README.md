@@ -348,11 +348,24 @@ matches, regex matches, and toxicity scores); a final section checks that no
 org-scoped rows were written to the Engine without an `org_id`. Exits `0` if
 everything matches, `1` otherwise.
 
+Only sections whose phase is recorded as completed in the checkpoint file are
+verified — a run that only finished `config` gets only the Config section.
+
+With `--api-mode` the script verifies through the **Shield and Engine APIs**
+instead of the databases. Coverage is shallower: inferences and feedback are
+compared by window counts (plus per-ID checks of recorded task-less
+inferences), and the rule-result/detail tables and org-id sanity check are
+skipped since they aren't reachable through the APIs.
+
 ### Setup
 
-Needs both database connections. The Shield variables are the same
-`SHIELD_POSTGRES_*` set used by `pre_migration_scope.py`; the Engine variables are
-the identical set with an `ENGINE_` prefix.
+SQL mode (default) needs both database connections. The Shield variables are the
+same `SHIELD_POSTGRES_*` set used by `pre_migration_scope.py`; the Engine
+variables are the identical set with an `ENGINE_` prefix.
+
+API mode instead uses the same API variables as `migrate_shield_to_engine.py`:
+`SHIELD_BASE_URL`, `SHIELD_API_KEY`, `ENGINE_BASE_URL`, `ENGINE_API_KEY`
+(plus optional `MIGRATION_TIMEOUT` / `MIGRATION_MAX_WORKERS`).
 
 Shield (source) database:
 
@@ -404,6 +417,9 @@ The date window and task scope (if the run used `--task-ids`) are read from it.
 
 ```bash
 python verify_counts.py --save-file migration_states/migration_state_2020-01-01_to_2021-01-01.json
+
+# Verify through the APIs instead of direct SQL
+python verify_counts.py --save-file migration_states/migration_state_2020-01-01_to_2021-01-01.json --api-mode
 ```
 
 ### Options
@@ -411,6 +427,7 @@ python verify_counts.py --save-file migration_states/migration_state_2020-01-01_
 | Flag | Description |
 |---|---|
 | `--save-file` | Path to the `migration_state_*.json` checkpoint of the run to verify. Required. |
+| `--api-mode` | Verify through the Shield and Engine APIs instead of direct SQL. Shallower coverage; see above. |
 
 ### Output
 
@@ -422,6 +439,7 @@ scoped to those tasks.
   Shield → Engine Migration Verification
   Window: from 2020-01-01 to 2021-01-01
   Org:    <target-org-uuid>
+  Phases: config, inferences, feedback
 ======================================================================
 
 Config (migrated IDs recorded in the save file)
@@ -454,6 +472,32 @@ Feedback
 Rows for org-scoped resources missing an org_id (each should be 0)
   ✓          prompt_rule_results          rows missing org_id: 0
   ...
+
+======================================================================
+  RESULT: ALL MATCH ✓
+======================================================================
+
+```
+With `--api-mode`:
+```
+======================================================================
+  Shield → Engine Migration Verification
+  Window: from 2020-01-01 to 2021-01-01
+  Mode:   api
+  Phases: config, inferences, feedback
+======================================================================
+
+Config (migrated IDs recorded in the save file)
+  ✓          tasks                        shield=42  engine=42
+  ✓          task_rule_links              shield=213  engine=213
+  ✓          rules                        shield=124  engine=124
+
+Inferences
+  ✓          inferences                   shield=1,204,556  engine=1,204,556
+  ✓          taskless_inferences          shield=31  engine=31
+
+Feedback
+  ✓          inference_feedback           shield=9,812  engine=9,812
 
 ======================================================================
   RESULT: ALL MATCH ✓
