@@ -219,6 +219,32 @@ def delete_rules_and_tasks(engine: Engine, task_ids: list, rule_ids: list) -> No
         delete_by_ids(conn, "tasks_to_rules", "rule_id", doomed_rule_ids)
         delete_by_ids(conn, "rule_data", "rule_id", doomed_rule_ids)
         delete_by_ids(conn, "rules", "id", doomed_rule_ids)
+
+        # Live validate/trace traffic can write spans and trace metadata for a
+        # task after migration; they'd block the task delete below.
+        conn.execute(
+            text(
+                "DELETE FROM metric_results m USING spans s "
+                "WHERE m.span_id = s.id AND s.task_id = ANY(:ids)",
+            ),
+            {"ids": task_ids},
+        )
+        conn.execute(
+            text("DELETE FROM spans WHERE task_id = ANY(:ids)"),
+            {"ids": task_ids},
+        )
+        conn.execute(
+            text(
+                "DELETE FROM agentic_annotations a USING trace_metadata t "
+                "WHERE a.trace_id = t.trace_id AND t.task_id = ANY(:ids)",
+            ),
+            {"ids": task_ids},
+        )
+        conn.execute(
+            text("DELETE FROM trace_metadata WHERE task_id = ANY(:ids)"),
+            {"ids": task_ids},
+        )
+
         delete_by_ids(conn, "tasks", "id", task_ids)
         print(
             f"  Rules: {len(doomed_rule_ids)} rule(s) deleted, "
