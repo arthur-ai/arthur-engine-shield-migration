@@ -7,6 +7,7 @@ The typical flow is:
 1. **`pre_migration_scope.py`** — size the migration before running it (read-only).
 2. **`migrate_shield_to_engine.py`** — perform the migration.
 3. **`verify_counts.py`** — confirm source and target row counts match afterward.
+4. **`onboard_tasks_from_csv.py`** — link the migrated tasks to models in the Arthur platform.
 
 `pre_migration_scope.py` and `migrate_shield_to_engine.py` take the same
 date-window flags — `--last-days`, or `--from-date` (with an optional
@@ -22,10 +23,10 @@ There is also **`delete_migrated_resources.py`** for rolling back a migration. I
 > number of tasks and inferences not migrated will be reported. And, similarly, in the
 > verify_counts.py script, the number that weren't migrated will be reported.
 
-Shared dependencies:
+Install the dependencies for all scripts:
 
 ```bash
-pip install sqlalchemy psycopg2-binary requests python-dotenv
+pip install -r requirements.txt
 ```
 
 Any of the environment variables below can be set in the shell or placed in a
@@ -65,12 +66,6 @@ export SHIELD_POSTGRES_PASSWORD="changeme_pg"
 export SHIELD_POSTGRES_URL="localhost"
 export SHIELD_POSTGRES_PORT="5432"
 export SHIELD_POSTGRES_DB="arthur_shield"
-```
-
-Dependencies are `sqlalchemy` and the `psycopg2` driver:
-
-```bash
-pip install sqlalchemy psycopg2-binary
 ```
 
 ### Usage
@@ -502,6 +497,81 @@ Feedback
 ======================================================================
   RESULT: ALL MATCH ✓
 ======================================================================
+```
+
+## `onboard_tasks_from_csv.py`
+
+Run after a migration to onboard the migrated tasks as GenAI applications in
+the Arthur platform. For each row in an input CSV, it links an existing engine
+task to a new model in a scope project via the platform's `link_task` job — the
+same flow as the UI's "link existing application". The job creates the traces
+and guardrails datasets and the model server-side, so no dataset upload or
+refresh is needed first.
+
+The script submits a link job per row, polls until every job reaches a terminal
+state, and writes a results CSV with the outcome of each row. Runs are
+**idempotent**: each row is tagged with an onboarding identifier
+(`csv-link:<task_id>`), and rows whose identifier already matches a model in
+the project are skipped, so re-running the same CSV never creates duplicates.
+
+### Setup
+
+Talks to the **Arthur platform API** (not the Shield or Engine databases), so
+it needs the platform host and, for non-interactive auth, a service account:
+
+| Variable | Description |
+|---|---|
+| `ARTHUR_API_HOST` | Arthur platform base URL (e.g. `https://platform.arthur.ai`). Required. |
+| `ARTHUR_CLIENT_ID` | Service account client ID |
+| `ARTHUR_CLIENT_SECRET` | Service account client secret |
+| `ONBOARDING_RESULTS_DIR` | *(optional)* directory for results CSVs, default `onboarding_results` |
+
+When `ARTHUR_CLIENT_ID`/`ARTHUR_CLIENT_SECRET` are not set, the script falls
+back to interactive browser (device) auth.
+
+### Input CSV
+
+A header row is required.
+
+| Column | Required | Description |
+|---|---|---|
+| `task_id` | yes | Engine task ID to link |
+| `project_id` | yes | Scope project to create the model in |
+| `org_id` | no | Informational only, echoed in the results CSV |
+| `connector_id` | no | Engine-internal connector ID; auto-resolved from the project when omitted |
+
+### Usage
+
+```bash
+python onboard_tasks_from_csv.py --csv-path tasks.csv
+
+# Custom results path and slower polling
+python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv --poll-interval 5
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--csv-path` | Input CSV with `task_id`/`project_id` columns. Required. |
+| `--results-csv` | Output CSV path. Default: `onboarding_results/<input>_results_<timestamp>.csv`. |
+| `--poll-interval` | Seconds between job status polls, default `2`. |
+
+### Output
+
+Progress is printed per row, and a results CSV is written with one row per
+input row: `task_id`, `project_id`, `org_id`, `status`, `job_id`, `model_id`,
+and `error`. Statuses are `linked`, `skipped_already_linked`, or `failed`
+(with the error message; for failed jobs, check the project activity log).
+The script exits `0` when no rows failed, `1` otherwise.
+
+```
+[task-1] link job submitted: 6f2c…
+[task-2] already linked (model 9a1b…), skipping
+1 job(s) still running...
+[task-1] linked (model 3c4d…)
+Results written to onboarding_results/tasks_results_20260806_141530.csv
+Done: 1 linked, 1 already linked, 0 failed
 ```
 
 ## `delete_migrated_resources.py`
