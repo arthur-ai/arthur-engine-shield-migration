@@ -22,6 +22,52 @@ There is also **`delete_migrated_resources.py`** for rolling back a migration. I
 > number of tasks and inferences not migrated will be reported. And, similarly, in the
 > verify_counts.py script, the number that weren't migrated will be reported.
 
+## Prerequisite: run the Engine in migration mode
+
+`migrate_shield_to_engine.py` writes through the Engine's migration API
+(`POST /api/v1/migration/*`). **Those routes only exist when the Engine is
+running with migration mode enabled**, and it is **disabled by default**. With it
+off the routes are never registered, so every migration request comes back `404`
+— which looks like a wrong `ENGINE_BASE_URL` rather than a config problem.
+
+The Engine reads `GENAI_ENGINE_MIGRATION_MODE`; it must be `enabled`
+(case-insensitive). Any other value, or unset, means off. Set it through
+whichever deployment path you use:
+
+| Deployment | Setting | Default |
+|---|---|---|
+| Helm | `genaiEngineMigrationMode: "enabled"` in `values.yaml` | `"disabled"` |
+| CloudFormation (ECS) | `GenaiEngineMigrationMode: enabled` parameter | `disabled` |
+| Docker / local | `GENAI_ENGINE_MIGRATION_MODE=enabled` | unset (off) |
+
+Changing it requires a restart of the Engine — the flag is read once at app
+startup when routes are registered.
+
+```bash
+# Helm
+helm upgrade arthur-genai-engine ... --set genaiEngineMigrationMode=enabled
+
+# Local
+export GENAI_ENGINE_MIGRATION_MODE=enabled
+uv run serve
+```
+
+Confirm it took effect before starting a migration — the endpoints show up in the
+Engine's OpenAPI spec under the `Migration` tag:
+
+```bash
+curl -s "$ENGINE_BASE_URL/openapi.json" | grep -c '/api/v1/migration/'
+# 0 => migration mode is off
+```
+
+> **Turn migration mode back off once the migration is verified.** It exposes
+> bulk-write endpoints that insert tasks, rules, inferences, and feedback with
+> caller-supplied IDs and timestamps, bypassing the normal validation path. Leave
+> it enabled only for the duration of the migration.
+
+`pre_migration_scope.py`, `verify_counts.py`, and `delete_migrated_resources.py`
+talk to PostgreSQL directly and do **not** need migration mode.
+
 Shared dependencies:
 
 ```bash
@@ -190,6 +236,10 @@ either database directly. Work is split into three phases (`config`, `inferences
 `feedback`) and checkpointed so a run can be safely resumed.
 
 ### Setup
+
+The target Engine must be running with **migration mode enabled**
+(`genaiEngineMigrationMode` / `GENAI_ENGINE_MIGRATION_MODE`) or every write here
+returns `404` — see [Prerequisite: run the Engine in migration mode](#prerequisite-run-the-engine-in-migration-mode).
 
 | Variable | Description |
 |---|---|
