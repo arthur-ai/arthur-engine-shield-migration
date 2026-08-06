@@ -29,13 +29,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from time import sleep
 from typing import Optional
-from dotenv import load_dotenv
 
 from arthur_client.api_bindings import (
     ConnectorsV1Api,
     ConnectorType,
-    JobsV1Api,
     JobState,
+    JobsV1Api,
     ModelsV1Api,
     PostLinkTaskRequest,
     TasksV1Api,
@@ -48,6 +47,7 @@ from arthur_client.auth import (
     ArthurOIDCMetadata,
     DeviceAuthorizer,
 )
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -67,6 +67,7 @@ RESULTS_DIR = os.getenv(
 ARTHUR_API_HOST = os.environ.get("ARTHUR_API_HOST")
 ARTHUR_CLIENT_ID = os.environ.get("ARTHUR_CLIENT_ID")
 ARTHUR_CLIENT_SECRET = os.environ.get("ARTHUR_CLIENT_SECRET")
+
 
 @dataclass
 class RowResult:
@@ -105,9 +106,11 @@ def read_rows(csv_path: str) -> list[RowResult]:
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None or not {"task_id", "project_id"}.issubset(
-            reader.fieldnames
+            reader.fieldnames,
         ):
-            raise ValueError("CSV must have a header with task_id and project_id columns")
+            raise ValueError(
+                "CSV must have a header with task_id and project_id columns",
+            )
         for line_num, raw in enumerate(reader, start=2):
             task_id = (raw.get("task_id") or "").strip()
             project_id = (raw.get("project_id") or "").strip()
@@ -120,7 +123,7 @@ def read_rows(csv_path: str) -> list[RowResult]:
                     org_id=(raw.get("org_id") or "").strip(),
                     connector_id=(raw.get("connector_id") or "").strip(),
                     onboarding_identifier=f"{ONBOARDING_ID_PREFIX}:{task_id}",
-                )
+                ),
             )
     return rows
 
@@ -168,11 +171,15 @@ def submit_rows(
             if existing_model_id:
                 row.status = "skipped_already_linked"
                 row.model_id = existing_model_id
-                print(f"[{row.task_id}] already linked (model {existing_model_id}), skipping")
+                print(
+                    f"[{row.task_id}] already linked (model {existing_model_id}), skipping",
+                )
                 continue
 
             connector_id = row.connector_id or resolve_connector_id(
-                connectors_client, row.project_id, connector_cache
+                connectors_client,
+                row.project_id,
+                connector_cache,
             )
             if not connector_id:
                 row.status = "failed"
@@ -237,9 +244,29 @@ def write_results(rows: list[RowResult], results_path: str) -> None:
         os.makedirs(parent, exist_ok=True)
     with open(results_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["task_id", "project_id", "org_id", "status", "job_id", "model_id", "error"])
+        writer.writerow(
+            [
+                "task_id",
+                "project_id",
+                "org_id",
+                "status",
+                "job_id",
+                "model_id",
+                "error",
+            ],
+        )
         for r in rows:
-            writer.writerow([r.task_id, r.project_id, r.org_id, r.status, r.job_id, r.model_id, r.error])
+            writer.writerow(
+                [
+                    r.task_id,
+                    r.project_id,
+                    r.org_id,
+                    r.status,
+                    r.job_id,
+                    r.model_id,
+                    r.error,
+                ],
+            )
     print(f"Results written to {results_path}")
 
 
@@ -248,12 +275,27 @@ def main() -> int:
         print("ARTHUR_API_HOST env var is required", file=sys.stderr)
         return 1
 
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--csv-path", required=True, help="input CSV with task_id/project_id columns")
-    parser.add_argument("--results-csv", default=None, help="output CSV path (default: onboarding_results/<input>_results_<timestamp>.csv)")
-    parser.add_argument("--poll-interval", type=float, default=2.0, help="seconds between job status polls")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--csv-path",
+        required=True,
+        help="input CSV with task_id/project_id columns",
+    )
+    parser.add_argument(
+        "--results-csv",
+        default=None,
+        help="output CSV path (default: onboarding_results/<input>_results_<timestamp>.csv)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="seconds between job status polls",
+    )
     args = parser.parse_args()
-
 
     rows = read_rows(args.csv_path)
     print(f"Loaded {len(rows)} row(s) from {args.csv_path}")
