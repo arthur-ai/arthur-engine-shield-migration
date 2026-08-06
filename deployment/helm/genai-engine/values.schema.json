@@ -151,11 +151,6 @@
             "enum": ["enabled", "disabled"],
             "description": "Enable Shield migration mode (enables the migration API endpoints)"
         },
-        "genaiEngineMigrationDeleteChunkSize": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Chunk size for deleting migrated resources in migration mode"
-        },
         "genaiEngineOpenAIProvider": {
             "type": "string",
             "enum": [
