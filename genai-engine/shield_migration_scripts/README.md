@@ -113,6 +113,15 @@ reports its completion and duration.
 Everything goes to **stdout**, so `| tee migration.log` and `> report.txt`
 capture exactly what the terminal showed, in order.
 
+`onboard_tasks_from_csv.py` also logs a permanent line per row as each link
+settles. Those scroll normally while the counter stays pinned to the bottom:
+
+```
+[task-a1b2] linked (model m-7f3e)
+[task-c3d4] already linked (model m-9a1b), skipping
+[ 42.0%] 210 / 500 rows onboarded · 0.4/s · ETA 12m 05s · 8m 30s elapsed · 4 running, 286 queued
+```
+
 > **Note:** `verify_counts.py` and `pre_migration_scope.py` buffer their report
 > and print it in full at the end. Their section headers therefore appear twice —
 > once live as each section starts, once in the final report. The report file
@@ -687,6 +696,7 @@ it needs the platform host and, for non-interactive auth, a service account:
 | `ONBOARDING_RESULTS_DIR` | *(optional)* directory for results CSVs, default `genai-engine/onboarding_results` |
 | `ONBOARDING_STATE_DIR` | *(optional)* directory for resume checkpoints, default `genai-engine/onboarding_states` |
 | `ONBOARDING_REQUEST_TIMEOUT` | *(optional)* seconds per platform API call, default `30` |
+| `MIGRATION_PROGRESS_INTERVAL` | *(optional)* seconds between progress updates, default `2`. `0` disables the live line. See [Progress output](#progress-output). |
 
 When `ARTHUR_CLIENT_ID`/`ARTHUR_CLIENT_SECRET` are not set, the script falls
 back to interactive browser (device) auth.

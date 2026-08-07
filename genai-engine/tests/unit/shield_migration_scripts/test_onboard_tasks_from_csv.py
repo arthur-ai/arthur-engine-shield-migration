@@ -14,6 +14,7 @@ import csv
 import json
 
 import onboard_tasks_from_csv as otc
+import progress
 import pytest
 from arthur_client.api_bindings import JobState
 from arthur_client.api_bindings.exceptions import ApiException
@@ -23,6 +24,13 @@ from arthur_client.api_bindings.exceptions import ApiException
 def no_sleep(monkeypatch):
     """Retry backoff and poll intervals should not cost real seconds."""
     monkeypatch.setattr(otc, "sleep", lambda _seconds: None)
+
+
+@pytest.fixture(autouse=True)
+def quiet_progress(monkeypatch):
+    """Keep the live counter out of the tests that assert on output. The
+    progress tests below opt back in explicitly."""
+    monkeypatch.setattr(progress, "PROGRESS_INTERVAL", 0)
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -730,3 +738,135 @@ def test_main_rejects_an_unusable_csv_without_a_traceback(run_main, tmp_path, ca
 
     assert otc.main() == 1
     assert "task_id" in capsys.readouterr().err
+
+
+# ── Progress reporting ────────────────────────────────────────────────────────
+
+
+def track_progress(monkeypatch):
+    """Record the live counter's constructor arguments and every position it
+    displays, so the tests can assert on what the operator would have seen."""
+    seen: dict = {"positions": [], "kwargs": {}}
+    real = progress.Progress
+
+    def spy(total, unit, **kwargs):
+        tracker = real(total, unit, **kwargs)
+        seen["kwargs"] = {"total": total, "unit": unit, **kwargs}
+        advance = tracker.update
+
+        def record(n=1, total=None, suffix=None):
+            advance(n, total=total, suffix=suffix)
+            seen["positions"].append(tracker.processed)
+
+        tracker.update = record
+        return tracker
+
+    monkeypatch.setattr(otc, "Progress", spy)
+    return seen
+
+
+@pytest.mark.unit_tests
+def test_a_failed_row_counts_as_settled():
+    """Failures are retried only by starting a new run, so they have to count
+    toward the position — otherwise the counter never reaches its total."""
+    assert otc.DONE_STATUSES < otc.TERMINAL_STATUSES
+    assert otc.STATUS_FAILED in otc.TERMINAL_STATUSES
+    assert otc.STATUS_PENDING not in otc.TERMINAL_STATUSES
+    assert otc.STATUS_SUBMITTED not in otc.TERMINAL_STATUSES
+
+
+@pytest.mark.unit_tests
+def test_say_prints_plainly_before_the_run_starts(build, capsys):
+    _, _, onboarder = build(make_rows(("t1", "p1")))
+    assert onboarder.progress is None
+
+    onboarder.say("[t1] re-attached to job job-1")
+
+    assert capsys.readouterr().out == "[t1] re-attached to job job-1\n"
+
+
+@pytest.mark.unit_tests
+def test_say_redraws_the_live_line_after_a_permanent_one(
+    build,
+    tty_stream,
+    fake_clock,
+    monkeypatch,
+):
+    """Per-row lines and the counter share the terminal. A row's line must not
+    leave the counter half-drawn, and the redraw must keep its suffix."""
+    monkeypatch.setattr(progress, "PROGRESS_INTERVAL", 2.0)
+    _, _, onboarder = build(make_rows(("t1", "p1")))
+    onboarder.progress = progress.Progress(
+        10,
+        "rows onboarded",
+        prefix="",
+        stream=tty_stream,
+        now=fake_clock,
+    )
+    fake_clock.advance(5)
+    onboarder.progress.update(1, suffix="3 running")
+
+    onboarder.say("[t1] linked (model m1)")
+
+    output = tty_stream.getvalue()
+    assert "[t1] linked (model m1)\n" in output
+    tail = output.split("[t1] linked (model m1)\n")[-1]
+    assert "rows onboarded" in tail
+    assert "3 running" in tail
+
+
+@pytest.mark.unit_tests
+def test_progress_counts_a_row_that_settles_without_a_job(build, monkeypatch):
+    """An already-linked row settles inside submit() and never reaches the poll
+    loop, so counting only polled rows would under-report."""
+    models = FakeModels(existing={f"{otc.ONBOARDING_ID_PREFIX}:t1": "model-1"})
+    rows, _, onboarder = build(make_rows(("t1", "p1"), ("t2", "p1")), models=models)
+    seen = track_progress(monkeypatch)
+
+    onboarder.run(rows)
+
+    assert rows[0].status == otc.STATUS_SKIPPED
+    assert seen["positions"][-1] == 2
+    assert seen["kwargs"]["total"] == 2
+
+
+@pytest.mark.unit_tests
+def test_progress_reaches_the_total_when_a_row_fails(build, monkeypatch):
+    jobs = FakeJobs({"job-1": [JobState.FAILED]})
+    rows, _, onboarder = build(make_rows(("t1", "p1")), jobs=jobs)
+    seen = track_progress(monkeypatch)
+
+    onboarder.run(rows)
+
+    assert rows[0].status == otc.STATUS_FAILED
+    assert seen["positions"][-1] == 1
+
+
+@pytest.mark.unit_tests
+def test_progress_excludes_an_earlier_run_from_the_rate(build, monkeypatch):
+    """Rows a previous run finished are position, not throughput — the same
+    resume-offset rule the migration script's inference counter uses."""
+    rows, _, onboarder = build(make_rows(("t1", "p1"), ("t2", "p1")))
+    rows[0].status = otc.STATUS_LINKED
+    seen = track_progress(monkeypatch)
+
+    onboarder.run(rows)
+
+    assert seen["kwargs"]["start"] == 1
+    assert seen["kwargs"]["total"] == 2
+
+
+@pytest.mark.unit_tests
+def test_progress_is_closed_when_a_row_raises(build, monkeypatch):
+    rows, _, onboarder = build(make_rows(("t1", "p1")))
+
+    def boom(row):
+        raise RuntimeError("platform down")
+
+    monkeypatch.setattr(onboarder, "submit", boom)
+
+    with pytest.raises(RuntimeError, match="platform down"):
+        onboarder.run(rows)
+
+    # No dangling live line, and say() reverts to plain print.
+    assert onboarder.progress is None
