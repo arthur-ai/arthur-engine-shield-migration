@@ -12,6 +12,14 @@ CSV columns (header row required, names are case-insensitive):
     connector_id  optional  engine-internal connector id; auto-resolved from
                             the project when omitted
 
+A task that is already linked in the target project is never linked again —
+the platform does not reject a duplicate link (UP-4804), so a second one would
+silently create another model, dataset and engine API key. Links made by this
+script are found by onboarding identifier; links made by anyone else, the UI
+included, are found by scanning the project's datasets for the task id in
+their locator. Those rows are reported as skipped_pre_existing and listed at
+the end of the run.
+
 Runs are resumable. Progress is checkpointed to a state file after every
 change, so an interrupted run — Ctrl-C, crash, expired token, timed-out job —
 can be restarted with the same command: rows that finished are skipped, jobs
@@ -41,6 +49,7 @@ from typing import Optional
 from arthur_client.api_bindings import (
     ConnectorsV1Api,
     ConnectorType,
+    DatasetsV1Api,
     JobKind,
     JobState,
     JobsV1Api,
@@ -87,8 +96,15 @@ RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 CONNECTOR_PAGE_SIZE = 10  # enough to detect an ambiguous project
 JOB_SCAN_PAGE_SIZE = 200
 JOB_SCAN_MAX_PAGES = 25
+DATASET_SCAN_PAGE_SIZE = 1000  # API maximum
+DATASET_SCAN_MAX_PAGES = 25
 
 ONBOARDING_ID_PREFIX = "csv-link"
+
+# Locator key every engine-backed dataset carries, holding the task it reads.
+# Mirrors arthur_common.models.connectors.SHIELD_DATASET_TASK_ID_FIELD, which
+# is not a dependency of arthur-client and so cannot be imported here.
+TASK_ID_LOCATOR_FIELD = "task_id"
 
 # Anything outside these is terminal. Written as the complement of the
 # in-progress states so a state added to the API later cannot hang the poller.
@@ -98,10 +114,11 @@ STATUS_PENDING = "pending"
 STATUS_SUBMITTED = "submitted"
 STATUS_LINKED = "linked"
 STATUS_SKIPPED = "skipped_already_linked"
+STATUS_PRE_EXISTING = "skipped_pre_existing"
 STATUS_FAILED = "failed"
 
 # Reached the goal — never retried, and never re-checked against the API.
-DONE_STATUSES = {STATUS_LINKED, STATUS_SKIPPED}
+DONE_STATUSES = {STATUS_LINKED, STATUS_SKIPPED, STATUS_PRE_EXISTING}
 
 
 class CsvError(Exception):
@@ -124,6 +141,7 @@ class RowResult:
     status: str = STATUS_PENDING
     job_id: str = ""
     model_id: str = ""
+    detail: str = ""
     error: str = ""
     onboarding_identifier: str = field(default="", repr=False)
 
@@ -140,6 +158,7 @@ RESULT_COLUMNS = [
     "status",
     "job_id",
     "model_id",
+    "detail",
     "error",
 ]
 
@@ -205,6 +224,7 @@ class OnboardingState:
                 row.status = stored.status
                 row.job_id = stored.job_id
                 row.model_id = stored.model_id
+                row.detail = stored.detail
                 row.error = stored.error
                 if not row.connector_id:
                     row.connector_id = stored.connector_id
@@ -441,6 +461,71 @@ def find_existing_model_id(
     return resp.records[0].id if resp.records else None
 
 
+def find_tasks_linked_in_project(
+    datasets_client: DatasetsV1Api,
+    project_id: str,
+    cache: dict[str, dict[str, list[str]]],
+) -> dict[str, list[str]]:
+    """Map task id -> dataset ids for every task already linked in the project.
+
+    Every engine-backed dataset records the task it reads in its locator, so
+    this catches links made by anyone — the UI included — where the
+    onboarding-identifier lookup only ever sees this script's own work. There
+    is no server-side filter on locator values, so the project's datasets are
+    listed once and scanned locally.
+    """
+    if project_id in cache:
+        return cache[project_id]
+
+    linked: dict[str, list[str]] = {}
+    page = 1
+    while page <= DATASET_SCAN_MAX_PAGES:
+        resp = call_with_retry(
+            datasets_client.get_datasets,
+            project_id=project_id,
+            page=page,
+            page_size=DATASET_SCAN_PAGE_SIZE,
+        )
+        for dataset in resp.records:
+            locator = getattr(dataset, "dataset_locator", None)
+            for locator_field in getattr(locator, "fields", None) or []:
+                if locator_field.key == TASK_ID_LOCATOR_FIELD and locator_field.value:
+                    linked.setdefault(str(locator_field.value), []).append(dataset.id)
+        if len(resp.records) < DATASET_SCAN_PAGE_SIZE:
+            break
+        page += 1
+    else:
+        print(
+            f"WARNING: stopped scanning project {project_id} datasets after "
+            f"{DATASET_SCAN_MAX_PAGES} pages; an existing link past that point "
+            f"will not be detected",
+        )
+
+    cache[project_id] = linked
+    return linked
+
+
+def describe_model_for_dataset(
+    models_client: ModelsV1Api,
+    project_id: str,
+    dataset_id: str,
+) -> tuple[str, str]:
+    """(model_id, name) of the model built on a dataset, ("", "") if there is none.
+
+    A dataset with no model means an earlier link job died between creating
+    the two, so the task is not actually onboarded.
+    """
+    resp = call_with_retry(
+        models_client.get_models,
+        project_id=project_id,
+        dataset_id=dataset_id,
+        page_size=1,
+    )
+    if not resp.records:
+        return "", ""
+    return resp.records[0].id, resp.records[0].name
+
+
 def find_inflight_link_job(
     jobs_client: JobsV1Api,
     row: RowResult,
@@ -496,6 +581,7 @@ class Onboarder:
         models_client: ModelsV1Api,
         tasks_client: TasksV1Api,
         jobs_client: JobsV1Api,
+        datasets_client: DatasetsV1Api,
         poll_interval: float,
         max_in_flight: int,
         max_wait: float,
@@ -505,11 +591,13 @@ class Onboarder:
         self.models_client = models_client
         self.tasks_client = tasks_client
         self.jobs_client = jobs_client
+        self.datasets_client = datasets_client
         self.poll_interval = poll_interval
         self.max_in_flight = max_in_flight
         self.max_wait = max_wait
         self.connector_cache: dict[str, list] = {}
         self.job_scan_cache: dict[str, dict[str, str]] = {}
+        self.linked_task_cache: dict[str, dict[str, list[str]]] = {}
         self.deadlines: dict[str, float] = {}
         self.poll_errors: dict[str, int] = {}
 
@@ -605,10 +693,14 @@ class Onboarder:
         if existing_model_id:
             row.status = STATUS_SKIPPED
             row.model_id = existing_model_id
+            row.detail = "onboarded by an earlier run of this script"
             row.error = ""
             print(
                 f"[{row.task_id}] already linked (model {existing_model_id}), skipping"
             )
+            return True
+
+        if self._skip_if_linked_outside_script(row):
             return True
 
         orphan_job_id = find_inflight_link_job(
@@ -623,6 +715,46 @@ class Onboarder:
             self.deadlines[row.key] = monotonic() + self.max_wait
             print(f"[{row.task_id}] already has link job {orphan_job_id} in flight")
             return True
+        return False
+
+    def _skip_if_linked_outside_script(self, row: RowResult) -> bool:
+        """Skip a task the project already has a link for, whoever made it.
+
+        The platform does not reject a second link for the same task (UP-4804),
+        so linking again would silently create a duplicate model, dataset and
+        engine API key. Datasets whose locator names the task but that have no
+        model are a half-finished link, not a link, and are left to proceed.
+        """
+        dataset_ids = find_tasks_linked_in_project(
+            self.datasets_client,
+            row.project_id,
+            self.linked_task_cache,
+        ).get(row.task_id)
+        if not dataset_ids:
+            return False
+
+        for dataset_id in dataset_ids:
+            model_id, model_name = describe_model_for_dataset(
+                self.models_client,
+                row.project_id,
+                dataset_id,
+            )
+            if not model_id:
+                continue
+            row.status = STATUS_PRE_EXISTING
+            row.model_id = model_id
+            row.detail = (
+                f"already linked outside this script to model "
+                f"{model_name!r} ({model_id}) via dataset {dataset_id}"
+            )
+            row.error = ""
+            print(f"[{row.task_id}] {row.detail}, skipping")
+            return True
+
+        print(
+            f"[{row.task_id}] dataset(s) {', '.join(dataset_ids)} name this task "
+            f"but have no model — treating as an unfinished link and proceeding",
+        )
         return False
 
     # -- polling ----------------------------------------------------------
@@ -765,7 +897,15 @@ def write_results(rows: list[RowResult], results_path: str) -> None:
 
 
 def summarize(rows: list[RowResult], state_path: str, interrupted: bool) -> int:
-    counts = {status: 0 for status in (STATUS_LINKED, STATUS_SKIPPED, STATUS_FAILED)}
+    counts = {
+        status: 0
+        for status in (
+            STATUS_LINKED,
+            STATUS_SKIPPED,
+            STATUS_PRE_EXISTING,
+            STATUS_FAILED,
+        )
+    }
     unfinished = 0
     for row in rows:
         if row.status in counts:
@@ -773,9 +913,24 @@ def summarize(rows: list[RowResult], state_path: str, interrupted: bool) -> int:
         else:
             unfinished += 1
 
+    pre_existing = [r for r in rows if r.status == STATUS_PRE_EXISTING]
+    if pre_existing:
+        # the whole point of the check — say exactly which rows it caught
+        print(
+            f"\n{len(pre_existing)} task(s) were already linked outside this "
+            f"script and were NOT linked again:",
+        )
+        for row in pre_existing:
+            print(f"  {row.task_id} (project {row.project_id}) -> model {row.model_id}")
+        print(
+            "  Remove them from the CSV, or investigate the existing models — "
+            "linking again would have created duplicates.\n",
+        )
+
     summary = (
         f"Done: {counts[STATUS_LINKED]} linked, "
         f"{counts[STATUS_SKIPPED]} already linked, "
+        f"{counts[STATUS_PRE_EXISTING]} pre-existing, "
         f"{counts[STATUS_FAILED]} failed"
     )
     if unfinished:
@@ -888,6 +1043,7 @@ def main() -> int:
         models_client=ModelsV1Api(api_client=api_client),
         tasks_client=TasksV1Api(api_client=api_client),
         jobs_client=JobsV1Api(api_client=api_client),
+        datasets_client=DatasetsV1Api(api_client=api_client),
         poll_interval=args.poll_interval,
         max_in_flight=args.max_in_flight,
         max_wait=args.max_wait or float("inf"),

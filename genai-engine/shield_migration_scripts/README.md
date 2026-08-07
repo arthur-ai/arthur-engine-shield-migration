@@ -509,10 +509,40 @@ the model, and the task's validation key server-side, so no dataset upload or
 refresh is needed first.
 
 The script keeps up to `--max-in-flight` link jobs open at a time, polls each
-to completion, and writes a results CSV with the outcome of every row. Runs are
-**idempotent**: each row is tagged with an onboarding identifier
-(`csv-link:<task_id>`), and rows whose identifier already matches a model in
-the project are skipped, so re-running the same CSV never creates duplicates.
+to completion, and writes a results CSV with the outcome of every row.
+
+### A task is never linked twice
+
+The platform does **not** reject a second link for a task that already has one
+([UP-4804](https://arthurai.atlassian.net/browse/UP-4804)) — it silently creates
+another model, another dataset, and another engine API key, both pointing at
+the same task. The script therefore checks before every submission, in two
+ways:
+
+| Check | Catches | Result status |
+|---|---|---|
+| Model with onboarding identifier `csv-link:<task_id>` in the project | links made by an earlier run of this script | `skipped_already_linked` |
+| Any dataset in the project whose locator has `task_id = <task_id>`, and that backs a model | links made by anyone — the **UI**, another tool, a hand-rolled API call | `skipped_pre_existing` |
+
+The second check is what covers UI-created links, which carry no onboarding
+identifier. There is no server-side filter on locator values, so the project's
+datasets are listed once per project and scanned locally.
+
+Rows caught by either check are skipped, kept in the results CSV with the
+existing model's ID in `model_id` and an explanation in `detail`, and
+`skipped_pre_existing` rows are additionally listed in a block at the end of
+the run:
+
+```
+1 task(s) were already linked outside this script and were NOT linked again:
+  9c3f… (project 4b21…) -> model 7ade…
+  Remove them from the CSV, or investigate the existing models — linking again
+  would have created duplicates.
+```
+
+A pre-existing link is information, not a failure — it does not change the exit
+code. A dataset that names the task but backs **no** model is treated as a
+half-finished link rather than a link, and the row proceeds.
 
 ### Resuming
 
@@ -536,13 +566,10 @@ API call and the checkpoint write) is adopted instead of duplicated. Pass
 > `skipped_already_linked`, so cross-check any row that failed once against the
 > project activity log before treating a later skip as a success.
 >
-> The already-linked check only sees models this script created — the
-> identifier is what it matches on. A task that was already linked through the
-> UI has no `csv-link:` identifier, and listing it in the CSV creates a second
-> model for it. Nothing server-side rejects that: the link job does not check
-> for an existing model, dataset, or validation key for the task, so the
-> duplicate is created silently and both models then point at the same task.
-> Exclude already-onboarded tasks from the CSV.
+> Both duplicate checks are read-then-write with no server-side constraint
+> behind them (UP-4804), so they cannot close every race. Two copies of this
+> script run concurrently over the same CSV can both pass the checks and both
+> link. Run one at a time.
 
 ### Before a large CSV: raise the engine's API key limit
 
@@ -622,9 +649,14 @@ python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv 
 
 Progress is printed per row, and a results CSV is written with one row per
 input row: `task_id`, `project_id`, `org_id`, `connector_id`, `status`,
-`job_id`, `model_id`, and `error`. Statuses are `linked`,
-`skipped_already_linked`, or `failed` (with the error message, including the
-platform's own detail; for failed jobs, check the project activity log).
+`job_id`, `model_id`, `detail`, and `error`.
+
+| Status | Meaning |
+|---|---|
+| `linked` | this run created the model |
+| `skipped_already_linked` | an earlier run of this script had already linked it |
+| `skipped_pre_existing` | already linked outside this script; see `detail` |
+| `failed` | see `error`, which carries the platform's own message; for failed jobs also check the project activity log |
 
 Both the results CSV and the checkpoint are written even when the run is
 interrupted or aborts. The script exits `0` when every row is onboarded, `1`
@@ -633,11 +665,17 @@ when any row failed or was left unfinished, and `130` when interrupted.
 ```
 [task-1] link job submitted: 6f2c…
 [task-2] already linked (model 9a1b…), skipping
+[task-3] already linked outside this script to model 'Support Agent' (7ade…) via dataset 51bc…, skipping
 1 job(s) still running...
 [task-1] linked (model 3c4d…)
-Results written to onboarding_results/tasks_results_20260806_141530.csv
 Checkpoint saved to onboarding_states/onboarding_state_tasks.json
-Done: 1 linked, 1 already linked, 0 failed
+Results written to onboarding_results/tasks_results_20260806_141530.csv
+
+1 task(s) were already linked outside this script and were NOT linked again:
+  task-3 (project 4b21…) -> model 7ade…
+  Remove them from the CSV, or investigate the existing models — linking again would have created duplicates.
+
+Done: 1 linked, 1 already linked, 1 pre-existing, 0 failed
 ```
 
 ## `delete_migrated_resources.py`
