@@ -38,17 +38,23 @@ Usage:
 import argparse
 import json
 import os
+import sys
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
+from progress import Heartbeat, Progress
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 load_dotenv()
+
+# Progress is written as it happens while the report itself is buffered and
+# printed at the end; line buffering keeps the two ordered under `| tee`.
+sys.stdout.reconfigure(line_buffering=True)
 
 # API-mode configuration, matching migrate_shield_to_engine.py.
 SHIELD_BASE_URL = os.getenv("SHIELD_BASE_URL")
@@ -239,6 +245,19 @@ def migrated_scope_clause(where, params, migrated_task_ids, taskless_inference_i
     )
 
 
+def count_label(conn, table):
+    """Name the query for the progress line: the counted table, plus which
+    database it is running against so the two sides are distinguishable."""
+    # `table` is a FROM fragment ("inference_prompts c JOIN inferences i ON …"),
+    # so its first token is the table actually being counted.
+    name = table.split()[0]
+    try:
+        database = conn.engine.url.database
+    except AttributeError:
+        database = None
+    return f"counting {name} ({database})" if database else f"counting {name}"
+
+
 def count(conn, table, where="", params=None):
     params = params or {}
     sql = f"SELECT COUNT(*) FROM {table} {where}"
@@ -246,7 +265,21 @@ def count(conn, table, where="", params=None):
     for key, value in params.items():
         if isinstance(value, list) and f"ANY(:{key})" not in sql:
             stmt = stmt.bindparams(bindparam(key, expanding=True))
-    return conn.execute(stmt, params).scalar_one()
+    # These are multi-join counts over billion-row tables — minutes each, and
+    # every call site funnels through here, so one heartbeat covers them all.
+    with Heartbeat(count_label(conn, table)):
+        return conn.execute(stmt, params).scalar_one()
+
+
+def section(lines, title):
+    """Record a report section header and announce it live.
+
+    The report is buffered and printed in full at the end, so without this the
+    operator sees nothing at all until every count has finished. Headers
+    therefore appear twice — once live, once in the final report.
+    """
+    lines.append(title)
+    print(f"\n{title}")
 
 
 def compare(label, shield_n, engine_n):
@@ -444,14 +477,20 @@ def verify_api(
                 )
                 for inference_id in taskless_inference_ids
             ]
-        results = {name: future.result() for name, future in futures.items()}
-        taskless_found = sum(
-            1 for future in taskless_futures if future.result().get("count", 0) > 0
-        )
+        with Heartbeat(f"awaiting {len(futures)} Shield/Engine queries"):
+            results = {name: future.result() for name, future in futures.items()}
+        # One Engine GET per task-less inference; resolve them via as_completed
+        # so the count advances as they land rather than in a silent block.
+        taskless_found = 0
+        with Progress(len(taskless_futures), "task-less inferences") as tracker:
+            for future in as_completed(taskless_futures):
+                if future.result().get("count", 0) > 0:
+                    taskless_found += 1
+                tracker.update()
 
     # ── Config ────────────────────────────────────────────────────────────
     if "config" in phases_completed:
-        lines.append("Config (migrated IDs recorded in the save file)")
+        section(lines, "Config (migrated IDs recorded in the save file)")
         if migrated_task_ids:
             engine_tasks = results["engine_tasks"]
             all_match = all_match and len(engine_tasks) == len(migrated_task_ids)
@@ -471,7 +510,7 @@ def verify_api(
 
     # ── Inferences ────────────────────────────────────────────────────────
     if "inferences" in phases_completed:
-        lines.append("Inferences")
+        section(lines, "Inferences")
         if inference_chunks:
             s = sum(sf.result().get("count", 0) for sf, _ in inference_chunks)
             e = sum(ef.result().get("count", 0) for _, ef in inference_chunks)
@@ -493,7 +532,7 @@ def verify_api(
 
     # ── Feedback ──────────────────────────────────────────────────────────
     if "feedback" in phases_completed:
-        lines.append("Feedback")
+        section(lines, "Feedback")
         e = sum(ef.result().get("total_count", 0) for _, ef in feedback_chunks)
         shield_rows = []
         for sf, _ in feedback_chunks:
@@ -511,6 +550,11 @@ def verify_api(
                 )
                 for inference_id in parent_ids
             }
+            # Resolve via as_completed so the progress line advances as the
+            # per-parent Shield lookups land, then read the settled futures.
+            with Progress(len(parents_in_window), "parent inferences") as tracker:
+                for _ in as_completed(parents_in_window.values()):
+                    tracker.update()
             s = sum(
                 1
                 for row in shield_rows
@@ -599,7 +643,7 @@ def verify(
     with shield.connect() as sc, engine.connect() as ec:
         # ── Config (tasks / rules / links recorded in the save file) ────────
         if "config" in phases_completed:
-            lines.append("Config (migrated IDs recorded in the save file)")
+            section(lines, "Config (migrated IDs recorded in the save file)")
             if migrated_task_ids:
                 e = count(
                     ec,
@@ -643,7 +687,7 @@ def verify(
         # ── Inferences ──────────────────────────────────────────────────────
         verify_inferences = "inferences" in phases_completed
         if verify_inferences:
-            lines.append("Inferences")
+            section(lines, "Inferences")
             for label, from_sql in inference_tables:
                 s_where, s_params = task_clause(
                     and_clause(parent_where, kept),
@@ -696,7 +740,7 @@ def verify(
             ),
         )
         if verify_inferences:
-            lines.append("Validation (rule) results")
+            section(lines, "Validation (rule) results")
             for table, shield_from_sql in rule_result_tables:
                 s_where, s_params = task_clause(
                     and_clause(rr_where, kept),
@@ -753,7 +797,7 @@ def verify(
         )
         scoped = bool(task_ids or migrated_task_ids or taskless_inference_ids)
         if verify_inferences:
-            lines.append("Rule result details")
+            section(lines, "Rule result details")
             for label, base_sql, org_alias in detail_tables:
                 s_total = 0
                 e_total = 0
@@ -791,7 +835,7 @@ def verify(
 
         # ── Feedback ────────────────────────────────────────────────────────
         if "feedback" in phases_completed:
-            lines.append("Feedback")
+            section(lines, "Feedback")
             fb_clauses = []
             for column in ("f.created_at", "i.created_at"):
                 if from_dt:
@@ -842,7 +886,8 @@ def verify(
 
         # ── Engine org_id sanity check ──────────────────────────────────────
         # No org-scoped row should have been inserted without an org_id.
-        lines.append(
+        section(
+            lines,
             "Rows for org-scoped resources missing an org_id (each should be 0)",
         )
         for table in (

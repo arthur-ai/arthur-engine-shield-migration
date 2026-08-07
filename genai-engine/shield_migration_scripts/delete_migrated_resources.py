@@ -28,10 +28,15 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
+from progress import Heartbeat, Progress
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection, Engine
 
 load_dotenv()
+
+# Progress redraws a single line in place on a terminal; line buffering keeps it
+# flowing under `| tee`, where stdout would otherwise be block-buffered.
+sys.stdout.reconfigure(line_buffering=True)
 
 BATCH_SIZE = int(os.getenv("MIGRATION_SQL_BATCH_SIZE", default=25000))
 SQL_WORKERS = int(os.getenv("MIGRATION_SQL_WORKERS", default=4))
@@ -169,34 +174,41 @@ def delete_batch_transaction(engine: Engine, inference_ids: list) -> int:
 
 def delete_task_inferences(engine: Engine, task_ids: list) -> int:
     with engine.connect() as conn:
-        all_ids = select_ids(
-            conn,
-            "SELECT id FROM inferences WHERE task_id IN :ids",
-            ids=task_ids,
-        )
+        with Heartbeat("selecting inference ids"):
+            all_ids = select_ids(
+                conn,
+                "SELECT id FROM inferences WHERE task_id IN :ids",
+                ids=task_ids,
+            )
     batches = [
         all_ids[start : start + BATCH_SIZE]
         for start in range(0, len(all_ids), BATCH_SIZE)
     ]
     deleted = 0
-    with ThreadPoolExecutor(max_workers=SQL_WORKERS) as executor:
-        futures = [
-            executor.submit(delete_batch_transaction, engine, batch)
-            for batch in batches
-        ]
-        for future in as_completed(futures):
-            deleted += future.result()
-            print(f"  Inferences: {deleted}/{len(all_ids)} deleted", flush=True)
+    with Progress(len(all_ids), "inferences deleted") as tracker:
+        with ThreadPoolExecutor(max_workers=SQL_WORKERS) as executor:
+            futures = [
+                executor.submit(delete_batch_transaction, engine, batch)
+                for batch in batches
+            ]
+            for future in as_completed(futures):
+                batch_deleted = future.result()
+                deleted += batch_deleted
+                tracker.update(batch_deleted)
     return deleted
 
 
 def delete_taskless_inferences(engine: Engine, inference_ids: list) -> None:
-    for start in range(0, len(inference_ids), BATCH_SIZE):
-        delete_batch_transaction(engine, inference_ids[start : start + BATCH_SIZE])
+    with Progress(len(inference_ids), "task-less inferences deleted") as tracker:
+        for start in range(0, len(inference_ids), BATCH_SIZE):
+            batch = inference_ids[start : start + BATCH_SIZE]
+            delete_batch_transaction(engine, batch)
+            tracker.update(len(batch))
 
 
 def delete_rules_and_tasks(engine: Engine, task_ids: list, rule_ids: list) -> None:
-    with engine.begin() as conn:
+    # One large transaction with no intermediate progress to report.
+    with Heartbeat("deleting rules, links and tasks"), engine.begin() as conn:
         linked_rule_ids = select_ids(
             conn,
             "SELECT DISTINCT rule_id FROM tasks_to_rules WHERE task_id IN :ids",
@@ -253,12 +265,13 @@ def main():
     engine = get_engine()
 
     with engine.connect() as conn:
-        inference_count = conn.execute(
-            text(
-                "SELECT count(*) FROM inferences WHERE task_id IN :ids",
-            ).bindparams(bindparam("ids", expanding=True)),
-            {"ids": task_ids},
-        ).scalar()
+        with Heartbeat("counting inferences to delete"):
+            inference_count = conn.execute(
+                text(
+                    "SELECT count(*) FROM inferences WHERE task_id IN :ids",
+                ).bindparams(bindparam("ids", expanding=True)),
+                {"ids": task_ids},
+            ).scalar()
 
     print(f"Found in {args.save_file}:")
     print(f"  {len(task_ids)} task(s) with {inference_count} inference(s)")

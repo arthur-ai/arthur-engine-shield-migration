@@ -29,8 +29,49 @@ Install the dependencies for all scripts:
 pip install -r requirements.txt
 ```
 
+Copy the **whole directory** — every script imports `progress.py` as a sibling
+module, so a single `.py` lifted out on its own will not run.
+
 Any of the environment variables below can be set in the shell or placed in a
 `.env` file in this directory (loaded automatically).
+
+## Progress output
+
+These scripts routinely run for hours (a ~1B-inference migration, or a single
+`COUNT(*)` joining across billion-row tables), so each one reports what it is
+doing as it goes.
+
+**On a terminal** a single line is rewritten in place, showing position, rate and
+an estimated time remaining:
+
+```
+  [ 42.3%] 423,000 / 1,000,000 inferences scanned · 1,240.0/s · ETA 7m 45s · 5m 41s elapsed · 422,000 inserted, 1,000 skipped (page 84)
+```
+
+Work with no measurable position — the big `COUNT(*)`s in `verify_counts.py` and
+`pre_migration_scope.py`, the bulk config inserts — ticks its elapsed time
+instead, then reports how long it took:
+
+```
+  counting inference_prompt_contents (arthur_shield)… 4m 12s
+  ✓ counting inference_prompt_contents (arthur_shield) (4m 31s)
+```
+
+**When the output is piped or redirected**, the same information is appended as
+whole lines at most once every `MIGRATION_PROGRESS_INTERVAL` seconds (default
+`2`) instead of being rewritten in place. A multi-hour run therefore produces a
+few hundred log lines rather than one per page. Set
+`MIGRATION_PROGRESS_INTERVAL=0` to drop the live line entirely; each step still
+reports its completion and duration.
+
+Everything goes to **stdout**, so `| tee migration.log` and `> report.txt`
+capture exactly what the terminal showed, in order.
+
+> **Note:** `verify_counts.py` and `pre_migration_scope.py` buffer their report
+> and print it in full at the end. Their section headers therefore appear twice —
+> once live as each section starts, once in the final report. The report file
+> `pre_migration_scope.py --output-dir` writes is built from the buffered lines
+> and never contains progress output.
 
 ## `pre_migration_scope.py`
 
@@ -200,6 +241,7 @@ either database directly. Work is split into three phases (`config`, `inferences
 | `MIGRATION_MAX_WORKERS` | *(optional)* concurrent Engine POSTs, default `10` |
 | `MIGRATION_SHIELD_FETCH_WORKERS` | *(optional)* concurrent Shield page fetchers, default `3` |
 | `MIGRATION_PREFETCH_PAGES` | *(optional)* Shield pages buffered ahead of the Engine writers, default `10` |
+| `MIGRATION_PROGRESS_INTERVAL` | *(optional)* seconds between progress updates, default `2`. `0` disables the live line. Applies to every script — see [Progress output](#progress-output). |
 
 ### Usage
 

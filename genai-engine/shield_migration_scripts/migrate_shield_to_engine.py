@@ -28,8 +28,14 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
+from progress import Heartbeat, Progress, format_duration
 
 load_dotenv()
+
+# Progress redraws a single line in place on a terminal. Line buffering keeps it
+# — and the phase banners — flowing under `| tee`, where stdout would otherwise
+# be block-buffered and appear to stall for minutes at a time.
+sys.stdout.reconfigure(line_buffering=True)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -122,25 +128,38 @@ def shield_post(path, body, params=None):
     return r.json()
 
 
-def shield_paginate(path, body, count_key, items_key):
+def shield_paginate(path, body, count_key, items_key, label=None):
     """Fetch all pages from a Shield POST search endpoint. Pages start at 0.
 
     page/page_size are query params — Shield silently ignores them if sent in
     the POST body and returns the same default-sized first page every time.
+
+    `label` is the plural noun for the progress line ("tasks", "rules"); without
+    it the fetch is silent.
     """
     page, all_items = 0, []
-    while True:
-        resp = shield_post(
-            path,
-            body,
-            params={"page_size": SHIELD_PAGE_SIZE, "page": page},
-        )
-        total = resp.get(count_key, 0)
-        batch = resp.get(items_key, [])
-        all_items.extend(batch)
-        if len(all_items) >= total or not batch:
-            break
-        page += 1
+    tracker = None
+    try:
+        while True:
+            resp = shield_post(
+                path,
+                body,
+                params={"page_size": SHIELD_PAGE_SIZE, "page": page},
+            )
+            total = resp.get(count_key, 0)
+            batch = resp.get(items_key, [])
+            all_items.extend(batch)
+            if label:
+                # The total is unknown until the first page comes back.
+                if tracker is None:
+                    tracker = Progress(total, label, prefix="    ")
+                tracker.update(len(batch), total=total)
+            if len(all_items) >= total or not batch:
+                break
+            page += 1
+    finally:
+        if tracker is not None:
+            tracker.close()
     return all_items
 
 
@@ -160,22 +179,31 @@ def engine_call(method, path, body=None, params=None):
     return r.json()
 
 
-def engine_paginate(path, body, count_key, items_key):
+def engine_paginate(path, body, count_key, items_key, label=None):
     """Fetch all pages from an Engine POST search endpoint. Pages start at 0."""
     page, all_items = 0, []
-    while True:
-        resp = engine_call(
-            "POST",
-            path,
-            body=body,
-            params={"page_size": SHIELD_PAGE_SIZE, "page": page},
-        )
-        total = resp.get(count_key, 0)
-        batch = resp.get(items_key, [])
-        all_items.extend(batch)
-        if len(all_items) >= total or not batch:
-            break
-        page += 1
+    tracker = None
+    try:
+        while True:
+            resp = engine_call(
+                "POST",
+                path,
+                body=body,
+                params={"page_size": SHIELD_PAGE_SIZE, "page": page},
+            )
+            total = resp.get(count_key, 0)
+            batch = resp.get(items_key, [])
+            all_items.extend(batch)
+            if label:
+                if tracker is None:
+                    tracker = Progress(total, label, prefix="    ")
+                tracker.update(len(batch), total=total)
+            if len(all_items) >= total or not batch:
+                break
+            page += 1
+    finally:
+        if tracker is not None:
+            tracker.close()
     return all_items
 
 
@@ -213,17 +241,6 @@ def engine_post_batches(path, items_key, items):
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-
-
-def format_duration(seconds: float) -> str:
-    """Human-readable duration, e.g. '1h 02m 03s', '4m 09s', '12.3s'."""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, secs = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes:02d}m {secs:02d}s"
-    return f"{minutes}m {secs:02d}s"
 
 
 TIMINGS: dict = {}  # phase -> steps, total, count, unit, chunk_times
@@ -510,7 +527,13 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
 
     search_body = {"task_ids": task_ids} if task_ids else {}
     step_start = time.monotonic()
-    tasks = shield_paginate("/api/v2/tasks/search", search_body, "count", "tasks")
+    tasks = shield_paginate(
+        "/api/v2/tasks/search",
+        search_body,
+        "count",
+        "tasks",
+        label="tasks",
+    )
     record_step_timing("config", "Fetch tasks", time.monotonic() - step_start)
     print(f"  Fetched {len(tasks)} tasks")
 
@@ -547,6 +570,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
             {"rule_scopes": ["task"]},
             "count",
             "rules",
+            label="task-scoped rules",
         )
 
     all_rules = default_rules + task_rules
@@ -574,6 +598,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
             {"rule_ids": [rule["id"] for rule in embedded_rules]},
             "count",
             "rules",
+            label="embedded rules",
         )
         active_ids = {rule["id"] for rule in active_rules}
         for rule in embedded_rules:
@@ -592,7 +617,13 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
         step_start = time.monotonic()
         engine_task_ids = {
             t["id"]
-            for t in engine_paginate("/api/v2/tasks/search", {}, "count", "tasks")
+            for t in engine_paginate(
+                "/api/v2/tasks/search",
+                {},
+                "count",
+                "tasks",
+                label="Engine tasks",
+            )
         }
         recovered_tasks = [t["id"] for t in tasks if t["id"] in engine_task_ids]
         ckpt.record_migrated_tasks(recovered_tasks)
@@ -605,6 +636,7 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
                 {"include_archived": True},
                 "count",
                 "rules",
+                label="Engine rules",
             )
         }
 
@@ -630,7 +662,8 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
         return
 
     step_start = time.monotonic()
-    resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": all_rules})
+    with Heartbeat(f"inserting {len(all_rules):,} rules"):
+        resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": all_rules})
     record_step_timing("config", "Insert rules", time.monotonic() - step_start)
     ckpt.record_migrated_rules(
         [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
@@ -646,11 +679,12 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
     # separately below so the Engine endpoint does NOT auto-link rules on insert.
     task_rows = [{k: v for k, v in t.items() if k != "rules"} for t in tasks]
     step_start = time.monotonic()
-    resp = engine_call(
-        "POST",
-        "/api/v1/migration/tasks/bulk",
-        {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
-    )
+    with Heartbeat(f"inserting {len(task_rows):,} tasks"):
+        resp = engine_call(
+            "POST",
+            "/api/v1/migration/tasks/bulk",
+            {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
+        )
     inserted_tasks = resp.get("tasks", [])
     ckpt.record_migrated_tasks(
         [t["id"] for t in inserted_tasks if t.get("id")],
@@ -676,11 +710,12 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
                 },
             )
     step_start = time.monotonic()
-    resp = engine_call(
-        "POST",
-        "/api/v1/migration/task_rule_links/bulk",
-        {"task_to_rule_links": links},
-    )
+    with Heartbeat(f"inserting {len(links):,} task–rule links"):
+        resp = engine_call(
+            "POST",
+            "/api/v1/migration/task_rule_links/bulk",
+            {"task_to_rule_links": links},
+        )
     record_step_timing(
         "config",
         "Insert task-rule links",
@@ -716,6 +751,7 @@ def migrate_archived_rules(ckpt: Checkpoint, recover=False):
         {"include_archived": True},
         "count",
         "rules",
+        label="archived rules",
     )
     for rule in archived_rules:
         rule["archived"] = True
@@ -735,6 +771,7 @@ def migrate_archived_rules(ckpt: Checkpoint, recover=False):
                 {"include_archived": True},
                 "count",
                 "rules",
+                label="Engine rules",
             )
         }
         recovered = [r["id"] for r in archived_rules if r["id"] in engine_rule_ids]
@@ -754,13 +791,15 @@ def migrate_archived_rules(ckpt: Checkpoint, recover=False):
 
     step_start = time.monotonic()
     inserted = 0
-    for start in range(0, len(archived_rules), ENGINE_BATCH_SIZE):
-        chunk = archived_rules[start : start + ENGINE_BATCH_SIZE]
-        resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": chunk})
-        ckpt.record_migrated_rules(
-            [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
-        )
-        inserted += len(resp.get("rules", []))
+    with Progress(len(archived_rules), "archived rules", prefix="    ") as tracker:
+        for start in range(0, len(archived_rules), ENGINE_BATCH_SIZE):
+            chunk = archived_rules[start : start + ENGINE_BATCH_SIZE]
+            resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": chunk})
+            ckpt.record_migrated_rules(
+                [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+            )
+            inserted += len(resp.get("rules", []))
+            tracker.update(len(chunk))
 
     record_step_timing(
         "inferences",
@@ -802,23 +841,21 @@ def recover_taskless_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None)
 
     candidate_ids = []
     active_fetchers = SHIELD_FETCH_WORKERS
-    pages_done = 0
     total_pages = None
-    while active_fetchers:
-        item = page_queue.get()
-        if item is None:
-            active_fetchers -= 1
-            continue
-        _, batch, total = item
-        candidate_ids.extend(inf["id"] for inf in batch if not inf.get("task_id"))
-        pages_done += 1
-        if total_pages is None and total:
-            total_pages = -(-total // SHIELD_PAGE_SIZE)
-        if pages_done % 10 == 0:
-            print(
-                f"    Scanning Shield: {pages_done}/{total_pages or '?'} pages",
-                flush=True,
-            )
+    tracker = Progress(0, "Shield pages scanned", prefix="    ")
+    try:
+        while active_fetchers:
+            item = page_queue.get()
+            if item is None:
+                active_fetchers -= 1
+                continue
+            _, batch, total = item
+            candidate_ids.extend(inf["id"] for inf in batch if not inf.get("task_id"))
+            if total_pages is None and total:
+                total_pages = -(-total // SHIELD_PAGE_SIZE)
+            tracker.update(total=total_pages)
+    finally:
+        tracker.close()
     if fetch_errors:
         raise fetch_errors[0]
     record_step_timing(
@@ -829,20 +866,27 @@ def recover_taskless_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None)
 
     step_start = time.monotonic()
     verified_ids = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(
-                engine_call,
-                "GET",
-                "/api/v2/inferences/query",
-                None,
-                {"inference_id": inference_id, "page_size": 1},
-            ): inference_id
-            for inference_id in candidate_ids
-        }
-        for future in as_completed(futures):
-            if future.result().get("count", 0) > 0:
-                verified_ids.append(futures[future])
+    # One Engine GET per candidate — hundreds of thousands of calls on a large
+    # window, so this needs its own progress line.
+    tracker = Progress(len(candidate_ids), "candidates checked", prefix="    ")
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(
+                    engine_call,
+                    "GET",
+                    "/api/v2/inferences/query",
+                    None,
+                    {"inference_id": inference_id, "page_size": 1},
+                ): inference_id
+                for inference_id in candidate_ids
+            }
+            for future in as_completed(futures):
+                if future.result().get("count", 0) > 0:
+                    verified_ids.append(futures[future])
+                tracker.update()
+    finally:
+        tracker.close()
     ckpt.record_taskless_inferences(verified_ids)
     record_step_timing(
         "inferences",
@@ -956,6 +1000,10 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None, recover=
     max_in_flight = MAX_WORKERS * 2
     active_fetchers = SHIELD_FETCH_WORKERS
 
+    # start= excludes the pages a resume already committed from the rate and
+    # ETA; they were not migrated during this run's elapsed time.
+    tracker = Progress(total_count, "inferences scanned", start=processed)
+
     try:
         while active_fetchers or in_flight:
             while active_fetchers and len(in_flight) < max_in_flight:
@@ -1022,15 +1070,16 @@ def migrate_inferences(ckpt: Checkpoint, from_dt, to_dt, task_ids=None, recover=
                 processed_this_run += batch_len
                 chunk_timer.update(processed_this_run)
                 ckpt.update_inference_page(next_commit + 1)
-                pct = processed / total_count * 100 if total_count else 0
-                matched_note = f", {matched:,} matched tasks" if wanted_tasks else ""
-                print(
-                    f"  [{pct:5.1f}%] {processed:,} / {total_count:,} inferences scanned"
-                    f"{matched_note} "
-                    f"({inserted:,} inserted, {skipped:,} skipped) (page {next_commit})",
+                matched_note = f"{matched:,} matched tasks · " if wanted_tasks else ""
+                tracker.update(
+                    batch_len,
+                    total=total_count,
+                    suffix=f"{matched_note}{inserted:,} inserted, "
+                    f"{skipped:,} skipped (page {next_commit})",
                 )
                 next_commit += 1
     finally:
+        tracker.close()
         executor.shutdown(cancel_futures=True)
 
     if producer_error:
@@ -1079,40 +1128,45 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
     phase_start = time.monotonic()
     processed_this_run = 0
     chunk_timer = ChunkTimer(phase_start)
+    tracker = Progress(0, "feedback records processed", start=processed)
 
-    while True:
-        fetch_params = {
-            **fb_params,
-            "page_size": SHIELD_PAGE_SIZE,
-            "page": page,
-            "sort": "asc",
-        }
-        resp = shield_get("/api/v2/feedback/query", params=fetch_params)
-        batch = resp.get("feedback", [])
-        total_count = resp.get("total_count", 0)
-        if not batch:
-            break
+    try:
+        while True:
+            fetch_params = {
+                **fb_params,
+                "page_size": SHIELD_PAGE_SIZE,
+                "page": page,
+                "sort": "asc",
+            }
+            resp = shield_get("/api/v2/feedback/query", params=fetch_params)
+            batch = resp.get("feedback", [])
+            total_count = resp.get("total_count", 0)
+            if not batch:
+                break
 
-        page_inserted, page_skipped = engine_post_batches(
-            "/api/v1/migration/feedback/bulk",
-            "feedback",
-            batch,
-        )
-        inserted += page_inserted
-        skipped += page_skipped
+            page_inserted, page_skipped = engine_post_batches(
+                "/api/v1/migration/feedback/bulk",
+                "feedback",
+                batch,
+            )
+            inserted += page_inserted
+            skipped += page_skipped
 
-        processed += len(batch)
-        processed_this_run += len(batch)
-        chunk_timer.update(processed_this_run)
-        page += 1
-        ckpt.update_feedback_page(page)
-        print(
-            f"  {processed:,} / {total_count:,} feedback records processed "
-            f"({inserted:,} inserted, {skipped:,} skipped) (page {page - 1})",
-        )
+            processed += len(batch)
+            processed_this_run += len(batch)
+            chunk_timer.update(processed_this_run)
+            page += 1
+            ckpt.update_feedback_page(page)
+            tracker.update(
+                len(batch),
+                total=total_count,
+                suffix=f"{inserted:,} inserted, {skipped:,} skipped (page {page - 1})",
+            )
 
-        if len(batch) < SHIELD_PAGE_SIZE:
-            break
+            if len(batch) < SHIELD_PAGE_SIZE:
+                break
+    finally:
+        tracker.close()
 
     ckpt.phase_done("feedback")
     phase_total = time.monotonic() - phase_start

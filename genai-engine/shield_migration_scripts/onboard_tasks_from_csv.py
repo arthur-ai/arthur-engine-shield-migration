@@ -69,6 +69,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Progress is reported per row as jobs settle; line buffering keeps it flowing
+# under `| tee`, where stdout would otherwise be block-buffered.
+sys.stdout.reconfigure(line_buffering=True)
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 ARTHUR_API_HOST = os.environ.get("ARTHUR_API_HOST")
@@ -867,7 +871,13 @@ class Onboarder:
                 self.state.save()
             if in_flight:
                 waiting = f", {len(queued)} queued" if queued else ""
-                print(f"{len(in_flight)} job(s) still running{waiting}...")
+                # Per-row lines say what happened; this says how far along the
+                # run is, which is otherwise invisible on a large CSV.
+                done = sum(1 for r in rows if r.status in DONE_STATUSES)
+                print(
+                    f"[{done}/{len(rows)} done] "
+                    f"{len(in_flight)} job(s) still running{waiting}...",
+                )
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
