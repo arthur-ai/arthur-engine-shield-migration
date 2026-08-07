@@ -63,3 +63,7 @@ blazebot/
 
 # Migration States
 **/migration_states/*
+
+# Task onboarding checkpoints and results
+**/onboarding_states/*
+**/onboarding_results/*

@@ -504,15 +504,56 @@ Feedback
 Run after a migration to onboard the migrated tasks as GenAI applications in
 the Arthur platform. For each row in an input CSV, it links an existing engine
 task to a new model in a scope project via the platform's `link_task` job — the
-same flow as the UI's "link existing application". The job creates the traces
-and guardrails datasets and the model server-side, so no dataset upload or
+same flow as the UI's "link existing application". The job creates the dataset,
+the model, and the task's validation key server-side, so no dataset upload or
 refresh is needed first.
 
-The script submits a link job per row, polls until every job reaches a terminal
-state, and writes a results CSV with the outcome of each row. Runs are
+The script keeps up to `--max-in-flight` link jobs open at a time, polls each
+to completion, and writes a results CSV with the outcome of every row. Runs are
 **idempotent**: each row is tagged with an onboarding identifier
 (`csv-link:<task_id>`), and rows whose identifier already matches a model in
 the project are skipped, so re-running the same CSV never creates duplicates.
+
+### Resuming
+
+Every change is checkpointed to a state file
+(`onboarding_states/onboarding_state_<input>.json`) as it happens, so an
+interrupted run — Ctrl-C, a crash, an expired token, a job that outlives
+`--max-wait` — is resumed by re-running **the same command**:
+
+- rows that finished are skipped without an API call;
+- rows whose link job was still running are re-attached to **by job ID** rather
+  than resubmitted;
+- rows that failed are retried from the top.
+
+Before submitting, each row is also checked against the project's in-flight
+link jobs, so a job that was created but never recorded (a crash between the
+API call and the checkpoint write) is adopted instead of duplicated. Pass
+`--restart` to discard the checkpoint and run the CSV from scratch.
+
+> **Note:** a link job that fails *after* creating the model leaves that model
+> in place. A later run finds it by onboarding identifier and reports
+> `skipped_already_linked`, so cross-check any row that failed once against the
+> project activity log before treating a later skip as a success.
+>
+> The already-linked check only sees models this script created — the
+> identifier is what it matches on. A task that was already linked through the
+> UI has no `csv-link:` identifier, and listing it in the CSV creates a second
+> model for it. Nothing server-side rejects that: the link job does not check
+> for an existing model, dataset, or validation key for the task, so the
+> duplicate is created silently and both models then point at the same task.
+> Exclude already-onboarded tasks from the CSV.
+
+### Before a large CSV: raise the engine's API key limit
+
+Every link job creates a validation API key in the GenAI Engine, and the engine
+caps **total active keys** at `MAX_API_KEYS` (default `100`) across all
+purposes, not just validation keys. Onboarding more tasks than the remaining
+headroom fails the excess rows with
+`400 Bad Request: Maximum number of active keys reached`.
+
+Raise `MAX_API_KEYS` on the engine before running a CSV larger than that, then
+re-run the same command — only the failed rows are retried.
 
 ### Setup
 
@@ -524,14 +565,19 @@ it needs the platform host and, for non-interactive auth, a service account:
 | `ARTHUR_API_HOST` | Arthur platform base URL (e.g. `https://platform.arthur.ai`). Required. |
 | `ARTHUR_CLIENT_ID` | Service account client ID |
 | `ARTHUR_CLIENT_SECRET` | Service account client secret |
-| `ONBOARDING_RESULTS_DIR` | *(optional)* directory for results CSVs, default `onboarding_results` |
+| `ONBOARDING_RESULTS_DIR` | *(optional)* directory for results CSVs, default `genai-engine/onboarding_results` |
+| `ONBOARDING_STATE_DIR` | *(optional)* directory for resume checkpoints, default `genai-engine/onboarding_states` |
+| `ONBOARDING_REQUEST_TIMEOUT` | *(optional)* seconds per platform API call, default `30` |
 
 When `ARTHUR_CLIENT_ID`/`ARTHUR_CLIENT_SECRET` are not set, the script falls
 back to interactive browser (device) auth.
 
 ### Input CSV
 
-A header row is required.
+A header row is required. Column names are matched case-insensitively and a
+byte-order mark (from an Excel export) is tolerated. Rows that repeat the same
+`task_id`/`project_id` pair are dropped with a warning — each would otherwise
+create its own model.
 
 | Column | Required | Description |
 |---|---|---|
@@ -540,13 +586,24 @@ A header row is required.
 | `org_id` | no | Informational only, echoed in the results CSV |
 | `connector_id` | no | Engine-internal connector ID; auto-resolved from the project when omitted |
 
+A project gets one engine-internal connector per associated data plane. When a
+project has more than one, auto-resolution is ambiguous and the row fails with
+the candidates listed — set `connector_id` explicitly to choose the engine.
+
 ### Usage
 
 ```bash
 python onboard_tasks_from_csv.py --csv-path tasks.csv
 
-# Custom results path and slower polling
-python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv --poll-interval 5
+# Resume an interrupted run — same command
+python onboard_tasks_from_csv.py --csv-path tasks.csv
+
+# Start over, ignoring the checkpoint
+python onboard_tasks_from_csv.py --csv-path tasks.csv --restart
+
+# Custom results path, gentler on the data plane
+python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv \
+    --poll-interval 5 --max-in-flight 3
 ```
 
 ### Options
@@ -555,15 +612,23 @@ python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv 
 |---|---|
 | `--csv-path` | Input CSV with `task_id`/`project_id` columns. Required. |
 | `--results-csv` | Output CSV path. Default: `onboarding_results/<input>_results_<timestamp>.csv`. |
+| `--state-file` | Resume checkpoint path. Default: `onboarding_states/onboarding_state_<input>.json`. |
+| `--restart` | Delete the checkpoint and run every row again. |
 | `--poll-interval` | Seconds between job status polls, default `2`. |
+| `--max-in-flight` | Link jobs kept open at once, default `10`. |
+| `--max-wait` | Seconds to wait on a single job before giving up on it, default `1800`. `0` waits indefinitely. |
 
 ### Output
 
 Progress is printed per row, and a results CSV is written with one row per
-input row: `task_id`, `project_id`, `org_id`, `status`, `job_id`, `model_id`,
-and `error`. Statuses are `linked`, `skipped_already_linked`, or `failed`
-(with the error message; for failed jobs, check the project activity log).
-The script exits `0` when no rows failed, `1` otherwise.
+input row: `task_id`, `project_id`, `org_id`, `connector_id`, `status`,
+`job_id`, `model_id`, and `error`. Statuses are `linked`,
+`skipped_already_linked`, or `failed` (with the error message, including the
+platform's own detail; for failed jobs, check the project activity log).
+
+Both the results CSV and the checkpoint are written even when the run is
+interrupted or aborts. The script exits `0` when every row is onboarded, `1`
+when any row failed or was left unfinished, and `130` when interrupted.
 
 ```
 [task-1] link job submitted: 6f2c…
@@ -571,6 +636,7 @@ The script exits `0` when no rows failed, `1` otherwise.
 1 job(s) still running...
 [task-1] linked (model 3c4d…)
 Results written to onboarding_results/tasks_results_20260806_141530.csv
+Checkpoint saved to onboarding_states/onboarding_state_tasks.json
 Done: 1 linked, 1 already linked, 0 failed
 ```
 
