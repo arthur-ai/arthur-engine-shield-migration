@@ -32,14 +32,20 @@ Usage:
 
 import argparse
 import os
+import sys
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
+from progress import Heartbeat
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 load_dotenv()
+
+# The report is buffered and printed at the end; progress is written as it
+# happens. Line buffering keeps the two ordered under `| tee`.
+sys.stdout.reconfigure(line_buffering=True)
 
 
 def get_shield_engine() -> Engine:
@@ -94,12 +100,28 @@ def estimate_count(conn, sql, params):
     """
     Return the planner's estimated row count for a SELECT via EXPLAIN.
     """
-    plan = conn.execute(
-        text(f"EXPLAIN (FORMAT JSON) {sql}"),
-        params,
-    ).scalar_one()
+    with Heartbeat(f"estimating {table_label(sql)}"):
+        plan = conn.execute(
+            text(f"EXPLAIN (FORMAT JSON) {sql}"),
+            params,
+        ).scalar_one()
     # psycopg2 returns the JSON already parsed into Python objects.
     return int(plan[0]["Plan"]["Plan Rows"])
+
+
+def section(title):
+    """Announce a section live. The report itself is buffered and not printed
+    until every count has finished, so without this the script is silent for
+    its whole run."""
+    print(f"\n{title}")
+
+
+def table_label(sql):
+    """Name the table a FROM fragment or SELECT counts, for the progress line."""
+    tokens = sql.split()
+    if "FROM" in tokens:
+        return tokens[tokens.index("FROM") + 1]
+    return tokens[0] if tokens else "rows"
 
 
 def and_clause(where, condition):
@@ -115,10 +137,13 @@ def windowed_count(conn, table, where, params, estimate):
     if estimate:
         return estimate_count(conn, f"SELECT * FROM {table} {where}", params)
 
-    return conn.execute(
-        text(f"SELECT COUNT(*) FROM {table} {where}"),
-        params,
-    ).scalar_one()
+    # Exact counts join across billion-row tables and take minutes each — this
+    # is the reason --estimate exists, and the reason they need a heartbeat.
+    with Heartbeat(f"counting {table_label(table)}"):
+        return conn.execute(
+            text(f"SELECT COUNT(*) FROM {table} {where}"),
+            params,
+        ).scalar_one()
 
 
 def format_count(value, estimate):
@@ -146,19 +171,23 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
 
     with engine.connect() as conn:
         # ── Config ──────────────────────────────────────────────────────────
-        task_count = conn.execute(
-            text("SELECT COUNT(*) FROM tasks WHERE NOT archived"),
-        ).scalar_one()
-        archived_task_count = conn.execute(
-            text("SELECT COUNT(*) FROM tasks WHERE archived"),
-        ).scalar_one()
-        rule_count = conn.execute(
-            text("SELECT COUNT(*) FROM rules WHERE scope = 'task'"),
-        ).scalar_one()
-        n_default = conn.execute(
-            text("SELECT COUNT(*) FROM rules WHERE scope = 'default'"),
-        ).scalar_one()
-        n_links = conn.execute(text("SELECT COUNT(*) FROM tasks_to_rules")).scalar_one()
+        section("Config")
+        with Heartbeat("counting tasks, rules and links"):
+            task_count = conn.execute(
+                text("SELECT COUNT(*) FROM tasks WHERE NOT archived"),
+            ).scalar_one()
+            archived_task_count = conn.execute(
+                text("SELECT COUNT(*) FROM tasks WHERE archived"),
+            ).scalar_one()
+            rule_count = conn.execute(
+                text("SELECT COUNT(*) FROM rules WHERE scope = 'task'"),
+            ).scalar_one()
+            n_default = conn.execute(
+                text("SELECT COUNT(*) FROM rules WHERE scope = 'default'"),
+            ).scalar_one()
+            n_links = conn.execute(
+                text("SELECT COUNT(*) FROM tasks_to_rules"),
+            ).scalar_one()
 
         lines.append("Config (always migrated in full, date window does not apply)")
         lines.append(f"  Tasks                          {fmt(task_count)}")
@@ -171,6 +200,7 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
         lines.append("")
 
         # ── Inferences ──────────────────────────────────────────────────────
+        section("Inferences")
         inf_where, inf_params = window_clause(from_dt, to_dt)
 
         # Exclude inferences referencing archived tasks from being migrated
@@ -214,8 +244,11 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
         tasks_with_data = 0
         if not estimate:
             inf_join_where = inf_where.replace("created_at", "i.created_at")
-            task_count_rows = conn.execute(
-                text(f"""
+            # The slowest query in the script: a full scan the planner cannot
+            # estimate per-group.
+            with Heartbeat("per-task inference counts (full scan)"):
+                task_count_rows = conn.execute(
+                    text(f"""
                     SELECT i.task_id AS task_id,
                            COALESCE(t.name, '(no task)') AS name,
                            COUNT(*) AS n
@@ -224,9 +257,9 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
                     {and_clause(inf_join_where, kept)}
                     GROUP BY i.task_id, t.name
                     """),
-                inf_params,
-            ).mappings()
-            rows = list(task_count_rows)
+                    inf_params,
+                ).mappings()
+                rows = list(task_count_rows)
             task_counts = {row["name"]: row["n"] for row in rows}
             tasks_with_data = sum(1 for row in rows if row["task_id"] is not None)
 
@@ -247,6 +280,7 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
         lines.append("")
 
         # ── Validation results ──────────────────────────────────────────────
+        section("Validation (rule) results")
         if estimate:
             prr_where, prr_params = window_clause(from_dt, to_dt)
             n_prompt_rr = windowed_count(
@@ -297,6 +331,7 @@ def scope_report(engine: Engine, from_dt, to_dt, output_dir=None, estimate=False
         lines.append("")
 
         # ── Feedback ────────────────────────────────────────────────────────
+        section("Feedback")
         if estimate:
             fb_where, fb_params = window_clause(from_dt, to_dt)
             n_fb = windowed_count(

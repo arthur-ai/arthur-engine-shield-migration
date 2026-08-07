@@ -7,6 +7,7 @@ The typical flow is:
 1. **`pre_migration_scope.py`** — size the migration before running it (read-only).
 2. **`migrate_shield_to_engine.py`** — perform the migration.
 3. **`verify_counts.py`** — confirm source and target row counts match afterward.
+4. **`onboard_tasks_from_csv.py`** — link the migrated tasks to models in the Arthur platform.
 
 `pre_migration_scope.py` and `migrate_shield_to_engine.py` take the same
 date-window flags — `--last-days`, or `--from-date` (with an optional
@@ -68,14 +69,55 @@ curl -s "$ENGINE_BASE_URL/openapi.json" | grep -c '/api/v1/migration/'
 `pre_migration_scope.py`, `verify_counts.py`, and `delete_migrated_resources.py`
 talk to PostgreSQL directly and do **not** need migration mode.
 
-Shared dependencies:
+Install the dependencies for all scripts:
 
 ```bash
-pip install sqlalchemy psycopg2-binary requests python-dotenv
+pip install -r requirements.txt
 ```
+
+Copy the **whole directory** — every script imports `progress.py` as a sibling
+module, so a single `.py` lifted out on its own will not run.
 
 Any of the environment variables below can be set in the shell or placed in a
 `.env` file in this directory (loaded automatically).
+
+## Progress output
+
+These scripts routinely run for hours (a ~1B-inference migration, or a single
+`COUNT(*)` joining across billion-row tables), so each one reports what it is
+doing as it goes.
+
+**On a terminal** a single line is rewritten in place, showing position, rate and
+an estimated time remaining:
+
+```
+  [ 42.3%] 423,000 / 1,000,000 inferences scanned · 1,240.0/s · ETA 7m 45s · 5m 41s elapsed · 422,000 inserted, 1,000 skipped (page 84)
+```
+
+Work with no measurable position — the big `COUNT(*)`s in `verify_counts.py` and
+`pre_migration_scope.py`, the bulk config inserts — ticks its elapsed time
+instead, then reports how long it took:
+
+```
+  counting inference_prompt_contents (arthur_shield)… 4m 12s
+  ✓ counting inference_prompt_contents (arthur_shield) (4m 31s)
+```
+
+**When the output is piped or redirected**, the same information is appended as
+whole lines at most once every `MIGRATION_PROGRESS_INTERVAL` seconds (default
+`2`) instead of being rewritten in place. A multi-hour run therefore produces a
+few hundred log lines rather than one per page. Set
+`MIGRATION_PROGRESS_INTERVAL=0` to drop the live line entirely; each step still
+reports its completion and duration.
+
+Everything goes to **stdout**, so `| tee migration.log` and `> report.txt`
+capture exactly what the terminal showed, in order.
+
+> **Note:** `verify_counts.py` and `pre_migration_scope.py` buffer their report
+> and print it in full at the end. Their section headers therefore appear twice —
+> once live as each section starts, once in the final report. The report file
+> `pre_migration_scope.py --output-dir` writes is built from the buffered lines
+> and never contains progress output.
 
 ## `pre_migration_scope.py`
 
@@ -111,12 +153,6 @@ export SHIELD_POSTGRES_PASSWORD="changeme_pg"
 export SHIELD_POSTGRES_URL="localhost"
 export SHIELD_POSTGRES_PORT="5432"
 export SHIELD_POSTGRES_DB="arthur_shield"
-```
-
-Dependencies are `sqlalchemy` and the `psycopg2` driver:
-
-```bash
-pip install sqlalchemy psycopg2-binary
 ```
 
 ### Usage
@@ -255,6 +291,7 @@ returns `404` — see [Prerequisite: run the Engine in migration mode](#prerequi
 | `MIGRATION_MAX_WORKERS` | *(optional)* concurrent Engine POSTs, default `10` |
 | `MIGRATION_SHIELD_FETCH_WORKERS` | *(optional)* concurrent Shield page fetchers, default `3` |
 | `MIGRATION_PREFETCH_PAGES` | *(optional)* Shield pages buffered ahead of the Engine writers, default `10` |
+| `MIGRATION_PROGRESS_INTERVAL` | *(optional)* seconds between progress updates, default `2`. `0` disables the live line. Applies to every script — see [Progress output](#progress-output). |
 
 ### Usage
 
@@ -552,6 +589,185 @@ Feedback
 ======================================================================
   RESULT: ALL MATCH ✓
 ======================================================================
+```
+
+## `onboard_tasks_from_csv.py`
+
+Run after a migration to onboard the migrated tasks as GenAI applications in
+the Arthur platform. For each row in an input CSV, it links an existing engine
+task to a new model in a scope project via the platform's `link_task` job — the
+same flow as the UI's "link existing application". The job creates the dataset,
+the model, and the task's validation key server-side, so no dataset upload or
+refresh is needed first.
+
+The script keeps up to `--max-in-flight` link jobs open at a time, polls each
+to completion, and writes a results CSV with the outcome of every row.
+
+### A task is never linked twice
+
+The platform does **not** reject a second link for a task that already has one
+([UP-4804](https://arthurai.atlassian.net/browse/UP-4804)) — it silently creates
+another model, another dataset, and another engine API key, both pointing at
+the same task. The script therefore checks before every submission, in two
+ways:
+
+| Check | Catches | Result status |
+|---|---|---|
+| Model with onboarding identifier `csv-link:<task_id>` in the project | links made by an earlier run of this script | `skipped_already_linked` |
+| Any dataset in the project whose locator has `task_id = <task_id>`, and that backs a model | links made by anyone — the **UI**, another tool, a hand-rolled API call | `skipped_pre_existing` |
+
+The second check is what covers UI-created links, which carry no onboarding
+identifier. There is no server-side filter on locator values, so the project's
+datasets are listed once per project and scanned locally.
+
+Rows caught by either check are skipped, kept in the results CSV with the
+existing model's ID in `model_id` and an explanation in `detail`, and
+`skipped_pre_existing` rows are additionally listed in a block at the end of
+the run:
+
+```
+1 task(s) were already linked outside this script and were NOT linked again:
+  9c3f… (project 4b21…) -> model 7ade…
+  Remove them from the CSV, or investigate the existing models — linking again
+  would have created duplicates.
+```
+
+A pre-existing link is information, not a failure — it does not change the exit
+code. A dataset that names the task but backs **no** model is treated as a
+half-finished link rather than a link, and the row proceeds.
+
+### Resuming
+
+Every change is checkpointed to a state file
+(`onboarding_states/onboarding_state_<input>.json`) as it happens, so an
+interrupted run — Ctrl-C, a crash, an expired token, a job that outlives
+`--max-wait` — is resumed by re-running **the same command**:
+
+- rows that finished are skipped without an API call;
+- rows whose link job was still running are re-attached to **by job ID** rather
+  than resubmitted;
+- rows that failed are retried from the top.
+
+Before submitting, each row is also checked against the project's in-flight
+link jobs, so a job that was created but never recorded (a crash between the
+API call and the checkpoint write) is adopted instead of duplicated. Pass
+`--restart` to discard the checkpoint and run the CSV from scratch.
+
+> **Note:** a link job that fails *after* creating the model leaves that model
+> in place. A later run finds it by onboarding identifier and reports
+> `skipped_already_linked`, so cross-check any row that failed once against the
+> project activity log before treating a later skip as a success.
+>
+> Both duplicate checks are read-then-write with no server-side constraint
+> behind them (UP-4804), so they cannot close every race. Two copies of this
+> script run concurrently over the same CSV can both pass the checks and both
+> link. Run one at a time.
+
+### Before a large CSV: raise the engine's API key limit
+
+Every link job creates a validation API key in the GenAI Engine, and the engine
+caps **total active keys** at `MAX_API_KEYS` (default `100`) across all
+purposes, not just validation keys. Onboarding more tasks than the remaining
+headroom fails the excess rows with
+`400 Bad Request: Maximum number of active keys reached`.
+
+Raise `MAX_API_KEYS` on the engine before running a CSV larger than that, then
+re-run the same command — only the failed rows are retried.
+
+### Setup
+
+Talks to the **Arthur platform API** (not the Shield or Engine databases), so
+it needs the platform host and, for non-interactive auth, a service account:
+
+| Variable | Description |
+|---|---|
+| `ARTHUR_API_HOST` | Arthur platform base URL (e.g. `https://platform.arthur.ai`). Required. |
+| `ARTHUR_CLIENT_ID` | Service account client ID |
+| `ARTHUR_CLIENT_SECRET` | Service account client secret |
+| `ONBOARDING_RESULTS_DIR` | *(optional)* directory for results CSVs, default `genai-engine/onboarding_results` |
+| `ONBOARDING_STATE_DIR` | *(optional)* directory for resume checkpoints, default `genai-engine/onboarding_states` |
+| `ONBOARDING_REQUEST_TIMEOUT` | *(optional)* seconds per platform API call, default `30` |
+
+When `ARTHUR_CLIENT_ID`/`ARTHUR_CLIENT_SECRET` are not set, the script falls
+back to interactive browser (device) auth.
+
+### Input CSV
+
+A header row is required. Column names are matched case-insensitively and a
+byte-order mark (from an Excel export) is tolerated. Rows that repeat the same
+`task_id`/`project_id` pair are dropped with a warning — each would otherwise
+create its own model.
+
+| Column | Required | Description |
+|---|---|---|
+| `task_id` | yes | Engine task ID to link |
+| `project_id` | yes | Scope project to create the model in |
+| `org_id` | no | Informational only, echoed in the results CSV |
+| `connector_id` | no | Engine-internal connector ID; auto-resolved from the project when omitted |
+
+A project gets one engine-internal connector per associated data plane. When a
+project has more than one, auto-resolution is ambiguous and the row fails with
+the candidates listed — set `connector_id` explicitly to choose the engine.
+
+### Usage
+
+```bash
+python onboard_tasks_from_csv.py --csv-path tasks.csv
+
+# Resume an interrupted run — same command
+python onboard_tasks_from_csv.py --csv-path tasks.csv
+
+# Start over, ignoring the checkpoint
+python onboard_tasks_from_csv.py --csv-path tasks.csv --restart
+
+# Custom results path, gentler on the data plane
+python onboard_tasks_from_csv.py --csv-path tasks.csv --results-csv results.csv \
+    --poll-interval 5 --max-in-flight 3
+```
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--csv-path` | Input CSV with `task_id`/`project_id` columns. Required. |
+| `--results-csv` | Output CSV path. Default: `onboarding_results/<input>_results_<timestamp>.csv`. |
+| `--state-file` | Resume checkpoint path. Default: `onboarding_states/onboarding_state_<input>.json`. |
+| `--restart` | Delete the checkpoint and run every row again. |
+| `--poll-interval` | Seconds between job status polls, default `2`. |
+| `--max-in-flight` | Link jobs kept open at once, default `10`. |
+| `--max-wait` | Seconds to wait on a single job before giving up on it, default `1800`. `0` waits indefinitely. |
+
+### Output
+
+Progress is printed per row, and a results CSV is written with one row per
+input row: `task_id`, `project_id`, `org_id`, `connector_id`, `status`,
+`job_id`, `model_id`, `detail`, and `error`.
+
+| Status | Meaning |
+|---|---|
+| `linked` | this run created the model |
+| `skipped_already_linked` | an earlier run of this script had already linked it |
+| `skipped_pre_existing` | already linked outside this script; see `detail` |
+| `failed` | see `error`, which carries the platform's own message; for failed jobs also check the project activity log |
+
+Both the results CSV and the checkpoint are written even when the run is
+interrupted or aborts. The script exits `0` when every row is onboarded, `1`
+when any row failed or was left unfinished, and `130` when interrupted.
+
+```
+[task-1] link job submitted: 6f2c…
+[task-2] already linked (model 9a1b…), skipping
+[task-3] already linked outside this script to model 'Support Agent' (7ade…) via dataset 51bc…, skipping
+1 job(s) still running...
+[task-1] linked (model 3c4d…)
+Checkpoint saved to onboarding_states/onboarding_state_tasks.json
+Results written to onboarding_results/tasks_results_20260806_141530.csv
+
+1 task(s) were already linked outside this script and were NOT linked again:
+  task-3 (project 4b21…) -> model 7ade…
+  Remove them from the CSV, or investigate the existing models — linking again would have created duplicates.
+
+Done: 1 linked, 1 already linked, 1 pre-existing, 0 failed
 ```
 
 ## `delete_migrated_resources.py`

@@ -1,0 +1,5 @@
+arthur-client==1.4.2282
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+requests==2.33.0
+sqlalchemy==2.0.51
