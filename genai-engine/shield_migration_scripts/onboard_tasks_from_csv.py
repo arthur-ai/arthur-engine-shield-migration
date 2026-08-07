@@ -66,11 +66,12 @@ from arthur_client.auth import (
     DeviceAuthorizer,
 )
 from dotenv import load_dotenv
+from progress import Heartbeat, Progress
 
 load_dotenv()
 
-# Progress is reported per row as jobs settle; line buffering keeps it flowing
-# under `| tee`, where stdout would otherwise be block-buffered.
+# Progress redraws a single line in place on a terminal; line buffering keeps it
+# flowing under `| tee`, where stdout would otherwise be block-buffered.
 sys.stdout.reconfigure(line_buffering=True)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -123,6 +124,10 @@ STATUS_FAILED = "failed"
 
 # Reached the goal — never retried, and never re-checked against the API.
 DONE_STATUSES = {STATUS_LINKED, STATUS_SKIPPED, STATUS_PRE_EXISTING}
+
+# Settled for this run. A failed row is retried only by starting a new run, so
+# it counts as finished for the purposes of the progress line.
+TERMINAL_STATUSES = DONE_STATUSES | {STATUS_FAILED}
 
 
 class CsvError(Exception):
@@ -483,27 +488,36 @@ def find_tasks_linked_in_project(
 
     linked: dict[str, list[str]] = {}
     page = 1
-    while page <= DATASET_SCAN_MAX_PAGES:
-        resp = call_with_retry(
-            datasets_client.get_datasets,
-            project_id=project_id,
-            page=page,
-            page_size=DATASET_SCAN_PAGE_SIZE,
-        )
-        for dataset in resp.records:
-            locator = getattr(dataset, "dataset_locator", None)
-            for locator_field in getattr(locator, "fields", None) or []:
-                if locator_field.key == TASK_ID_LOCATOR_FIELD and locator_field.value:
-                    linked.setdefault(str(locator_field.value), []).append(dataset.id)
-        if len(resp.records) < DATASET_SCAN_PAGE_SIZE:
-            break
-        page += 1
-    else:
-        print(
-            f"WARNING: stopped scanning project {project_id} datasets after "
-            f"{DATASET_SCAN_MAX_PAGES} pages; an existing link past that point "
-            f"will not be detected",
-        )
+    # Up to 25 pages of 1,000 datasets, once per project — minutes of silence
+    # on a large project without a heartbeat.
+    with Heartbeat(f"scanning project {project_id} datasets") as beat:
+        while page <= DATASET_SCAN_MAX_PAGES:
+            beat.label = f"scanning project {project_id} datasets (page {page})"
+            resp = call_with_retry(
+                datasets_client.get_datasets,
+                project_id=project_id,
+                page=page,
+                page_size=DATASET_SCAN_PAGE_SIZE,
+            )
+            for dataset in resp.records:
+                locator = getattr(dataset, "dataset_locator", None)
+                for locator_field in getattr(locator, "fields", None) or []:
+                    if (
+                        locator_field.key == TASK_ID_LOCATOR_FIELD
+                        and locator_field.value
+                    ):
+                        linked.setdefault(str(locator_field.value), []).append(
+                            dataset.id,
+                        )
+            if len(resp.records) < DATASET_SCAN_PAGE_SIZE:
+                break
+            page += 1
+        else:
+            print(
+                f"WARNING: stopped scanning project {project_id} datasets after "
+                f"{DATASET_SCAN_MAX_PAGES} pages; an existing link past that point "
+                f"will not be detected",
+            )
 
     cache[project_id] = linked
     return linked
@@ -547,23 +561,25 @@ def find_inflight_link_job(
         mapping: dict[str, str] = {}
         try:
             page = 1
-            while page <= JOB_SCAN_MAX_PAGES:
-                resp = call_with_retry(
-                    jobs_client.get_jobs,
-                    project_id=row.project_id,
-                    kinds=[JobKind.CREATE_MODEL_LINK_TASK],
-                    states=sorted(IN_PROGRESS_JOB_STATES),
-                    page=page,
-                    page_size=JOB_SCAN_PAGE_SIZE,
-                )
-                for job in resp.records:
-                    spec = getattr(job.job_spec, "actual_instance", None)
-                    task_id = getattr(spec, "task_id", None)
-                    if task_id:
-                        mapping.setdefault(str(task_id), job.id)
-                if len(resp.records) < JOB_SCAN_PAGE_SIZE:
-                    break
-                page += 1
+            # Scanned once per project, up to 25 pages of 200 jobs.
+            with Heartbeat(f"scanning project {row.project_id} link jobs"):
+                while page <= JOB_SCAN_MAX_PAGES:
+                    resp = call_with_retry(
+                        jobs_client.get_jobs,
+                        project_id=row.project_id,
+                        kinds=[JobKind.CREATE_MODEL_LINK_TASK],
+                        states=sorted(IN_PROGRESS_JOB_STATES),
+                        page=page,
+                        page_size=JOB_SCAN_PAGE_SIZE,
+                    )
+                    for job in resp.records:
+                        spec = getattr(job.job_spec, "actual_instance", None)
+                        task_id = getattr(spec, "task_id", None)
+                        if task_id:
+                            mapping.setdefault(str(task_id), job.id)
+                    if len(resp.records) < JOB_SCAN_PAGE_SIZE:
+                        break
+                    page += 1
         except Exception as e:
             print(
                 f"WARNING: could not list in-flight link jobs for project "
@@ -604,6 +620,18 @@ class Onboarder:
         self.linked_task_cache: dict[str, dict[str, list[str]]] = {}
         self.deadlines: dict[str, float] = {}
         self.poll_errors: dict[str, int] = {}
+        self.progress: Optional[Progress] = None
+
+    def say(self, message: str) -> None:
+        """Emit a permanent line without destroying the live progress line.
+
+        Progress.log() erases the in-place line, writes the message, and redraws
+        — so per-row output and the running counter can share the terminal.
+        """
+        if self.progress is None:
+            print(message)
+        else:
+            self.progress.log(message)
 
     # -- resume -----------------------------------------------------------
 
@@ -621,14 +649,14 @@ class Onboarder:
             try:
                 job = call_with_retry(self.jobs_client.get_job, job_id=row.job_id)
             except Exception as e:
-                print(
+                self.say(
                     f"[{row.task_id}] could not read job {row.job_id} "
                     f"({format_error(e)}), retrying the row from scratch",
                 )
                 row.status, row.job_id = STATUS_PENDING, ""
                 continue
             if job.state in IN_PROGRESS_JOB_STATES:
-                print(
+                self.say(
                     f"[{row.task_id}] re-attached to job {row.job_id} "
                     f"({_state_name(job.state)})",
                 )
@@ -638,7 +666,7 @@ class Onboarder:
             elif job.state == JobState.COMPLETED:
                 self._mark_linked(row)
             else:
-                print(
+                self.say(
                     f"[{row.task_id}] previous job {row.job_id} ended in state "
                     f"{_state_name(job.state)}, retrying",
                 )
@@ -675,7 +703,7 @@ class Onboarder:
             row.status = STATUS_SUBMITTED
             row.error = ""
             self.deadlines[row.key] = monotonic() + self.max_wait
-            print(f"[{row.task_id}] link job submitted: {row.job_id}")
+            self.say(f"[{row.task_id}] link job submitted: {row.job_id}")
             return True
         except RowError as e:
             self._mark_failed(row, str(e))
@@ -699,7 +727,7 @@ class Onboarder:
             row.model_id = existing_model_id
             row.detail = "onboarded by an earlier run of this script"
             row.error = ""
-            print(
+            self.say(
                 f"[{row.task_id}] already linked (model {existing_model_id}), skipping"
             )
             return True
@@ -717,7 +745,7 @@ class Onboarder:
             row.status = STATUS_SUBMITTED
             row.error = ""
             self.deadlines[row.key] = monotonic() + self.max_wait
-            print(f"[{row.task_id}] already has link job {orphan_job_id} in flight")
+            self.say(f"[{row.task_id}] already has link job {orphan_job_id} in flight")
             return True
         return False
 
@@ -752,10 +780,10 @@ class Onboarder:
                 f"{model_name!r} ({model_id}) via dataset {dataset_id}"
             )
             row.error = ""
-            print(f"[{row.task_id}] {row.detail}, skipping")
+            self.say(f"[{row.task_id}] {row.detail}, skipping")
             return True
 
-        print(
+        self.say(
             f"[{row.task_id}] dataset(s) {', '.join(dataset_ids)} name this task "
             f"but have no model — treating as an unfinished link and proceeding",
         )
@@ -778,7 +806,7 @@ class Onboarder:
                     keep_job_id=True,
                 )
                 return True
-            print(f"[{row.task_id}] poll failed ({format_error(e)}), will retry")
+            self.say(f"[{row.task_id}] poll failed ({format_error(e)}), will retry")
             return False
 
         self.poll_errors.pop(row.key, None)
@@ -813,11 +841,11 @@ class Onboarder:
         except Exception as e:
             # the link itself succeeded; only the id lookup did not
             row.model_id = ""
-            print(
+            self.say(
                 f"[{row.task_id}] linked, but model lookup failed ({format_error(e)})"
             )
             return
-        print(f"[{row.task_id}] linked (model {row.model_id or 'unknown'})")
+        self.say(f"[{row.task_id}] linked (model {row.model_id or 'unknown'})")
 
     def _mark_failed(
         self,
@@ -830,7 +858,7 @@ class Onboarder:
         row.error = message
         if not keep_job_id:
             row.job_id = ""
-        print(f"[{row.task_id}] {prefix + ': ' if prefix else ''}{message}")
+        self.say(f"[{row.task_id}] {prefix + ': ' if prefix else ''}{message}")
 
     # -- driver -----------------------------------------------------------
 
@@ -847,37 +875,62 @@ class Onboarder:
 
         already_done = len(rows) - len(queued) - len(in_flight)
         if already_done:
-            print(f"{already_done} row(s) already onboarded, skipping")
+            self.say(f"{already_done} row(s) already onboarded, skipping")
 
-        while queued or in_flight:
-            while queued and len(in_flight) < self.max_in_flight:
-                row = queued.pop(0)
-                if self.submit(row):
-                    in_flight.append(row)
-                self.state.save()
-            if not in_flight:
-                continue
+        # start= is the rows a previous run finished: they count toward the
+        # displayed position but not toward this run's rate or ETA.
+        self.progress = Progress(
+            len(rows),
+            "rows onboarded",
+            prefix="",
+            start=already_done,
+        )
+        # Rows settle in two places — submit() resolves already-linked skips and
+        # submission failures without ever entering in_flight, poll() resolves
+        # the rest — so the position is derived from the rows themselves rather
+        # than counted at either site.
+        settled = already_done
 
-            sleep(self.poll_interval)
-            still_running = []
-            settled = False
-            for row in in_flight:
-                if self.poll(row):
-                    settled = True
-                else:
-                    still_running.append(row)
-            in_flight = still_running
-            if settled:
-                self.state.save()
-            if in_flight:
-                waiting = f", {len(queued)} queued" if queued else ""
-                # Per-row lines say what happened; this says how far along the
-                # run is, which is otherwise invisible on a large CSV.
-                done = sum(1 for r in rows if r.status in DONE_STATUSES)
-                print(
-                    f"[{done}/{len(rows)} done] "
-                    f"{len(in_flight)} job(s) still running{waiting}...",
+        def advance() -> None:
+            nonlocal settled
+            now = sum(1 for r in rows if r.status in TERMINAL_STATUSES)
+            suffix = ", ".join(
+                part
+                for part in (
+                    f"{len(in_flight)} running" if in_flight else "",
+                    f"{len(queued)} queued" if queued else "",
                 )
+                if part
+            )
+            self.progress.update(now - settled, suffix=suffix)
+            settled = now
+
+        try:
+            while queued or in_flight:
+                while queued and len(in_flight) < self.max_in_flight:
+                    row = queued.pop(0)
+                    if self.submit(row):
+                        in_flight.append(row)
+                    self.state.save()
+                    advance()
+                if not in_flight:
+                    continue
+
+                sleep(self.poll_interval)
+                still_running = []
+                any_settled = False
+                for row in in_flight:
+                    if self.poll(row):
+                        any_settled = True
+                    else:
+                        still_running.append(row)
+                in_flight = still_running
+                if any_settled:
+                    self.state.save()
+                advance()
+        finally:
+            self.progress.close()
+            self.progress = None
 
 
 # ── Output ────────────────────────────────────────────────────────────────────

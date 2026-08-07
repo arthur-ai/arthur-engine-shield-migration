@@ -152,6 +152,7 @@ class Progress:
         self._started_at = now()
         self._last_render = None
         self._rendered_at = None  # position the last frame showed
+        self._suffix = ""  # reused when a redraw supplies none
         self._closed = False
 
     def __enter__(self):
@@ -161,9 +162,10 @@ class Progress:
         self.close()
         return False
 
-    def update(self, n=1, total=None, suffix=""):
+    def update(self, n=1, total=None, suffix=None):
         """Advance by `n`. `total` refreshes the denominator — the Shield page
-        count is unknown until the first page comes back."""
+        count is unknown until the first page comes back. Omitting `suffix`
+        keeps the previous one; pass "" to clear it."""
         self.processed += n
         if total is not None:
             self.total = total or 0
@@ -192,7 +194,13 @@ class Progress:
         else:
             self._writer.permanent(self.prefix + summary)
 
-    def _render(self, suffix="", force=False):
+    def _render(self, suffix=None, force=False):
+        # A redraw after permanent output passes no suffix — keep showing the
+        # last one rather than silently dropping it off the line.
+        if suffix is None:
+            suffix = self._suffix
+        else:
+            self._suffix = suffix
         if PROGRESS_INTERVAL <= 0:
             return
         now = self._now()

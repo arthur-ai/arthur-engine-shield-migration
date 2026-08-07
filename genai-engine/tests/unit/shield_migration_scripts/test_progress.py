@@ -229,7 +229,7 @@ def test_a_shorter_frame_erases_the_tail_of_a_longer_one(tty_stream, fake_clock)
     long_len = len(tty_stream.getvalue().split("\r")[-1])
 
     fake_clock.advance(5)
-    tracker.update(0)
+    tracker.update(0, suffix="")  # explicitly cleared, so the frame shrinks
     short_frame = tty_stream.getvalue().split("\r")[-1]
     # Padded out to the previous width so no tail survives.
     assert len(short_frame) == long_len
@@ -250,6 +250,28 @@ def test_log_writes_a_permanent_line_and_redraws(tty_stream, fake_clock):
     assert "something worth keeping\n" in output
     # The live line is redrawn after the permanent one.
     assert output.rindex("\r") > output.rindex("something worth keeping")
+
+
+@pytest.mark.unit_tests
+def test_log_redraw_keeps_the_last_suffix(piped_stream, fake_clock):
+    """A redraw after permanent output must not silently drop the suffix — it
+    carries the per-run detail (jobs running, rows inserted)."""
+    tracker = Progress(100, "rows", stream=piped_stream, now=fake_clock)
+    fake_clock.advance(5)
+    tracker.update(1, suffix="5 running")
+    tracker.log("[t1] linked")
+
+    assert "5 running" in piped_stream.frames[-1]
+
+
+@pytest.mark.unit_tests
+def test_close_keeps_the_last_suffix(piped_stream, fake_clock):
+    tracker = Progress(100, "rows", stream=piped_stream, now=fake_clock)
+    fake_clock.advance(5)
+    tracker.update(1, suffix="5 running")
+    fake_clock.advance(5)
+    tracker.update(1)  # no suffix supplied
+    assert "5 running" in piped_stream.frames[-1]
 
 
 @pytest.mark.unit_tests
