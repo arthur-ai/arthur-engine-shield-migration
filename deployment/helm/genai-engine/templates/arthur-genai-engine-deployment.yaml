@@ -134,8 +134,6 @@ spec:
               value: "{{ .Values.genaiEngineCacheTaskRulesCacheTTL }}"
             - name: GENAI_ENGINE_MIGRATION_MODE
               value: "{{ .Values.genaiEngineMigrationMode }}"
-            - name: GENAI_ENGINE_MIGRATION_DELETE_CHUNK_SIZE
-              value: "{{ .Values.genaiEngineMigrationDeleteChunkSize }}"
             - name: GENAI_ENGINE_ADMIN_KEY
               valueFrom:
                 secretKeyRef:
