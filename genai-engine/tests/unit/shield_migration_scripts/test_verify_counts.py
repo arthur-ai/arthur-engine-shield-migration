@@ -210,3 +210,283 @@ def test_verify_flags_rows_missing_an_org_id(monkeypatch, stub_conn, capsys):
 
     assert ok is False
     assert "missing org ids: 3" in capsys.readouterr().out
+
+
+# ── task_id_lines() ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit_tests
+def test_task_id_lines_names_tasks_when_the_name_is_known():
+    lines = vc.task_id_lines(["a", "b"], {"a": "Support Copilot"})
+
+    assert lines == ["       a (Support Copilot)", "       b"]
+
+
+@pytest.mark.unit_tests
+def test_task_id_lines_truncates_past_the_limit():
+    lines = vc.task_id_lines([str(n) for n in range(10)], {}, limit=3)
+
+    assert len(lines) == 4
+    assert lines[-1].strip().startswith("… 7 more")
+
+
+@pytest.mark.unit_tests
+def test_task_id_lines_lists_everything_when_unlimited():
+    lines = vc.task_id_lines([str(n) for n in range(10)], {})
+
+    assert len(lines) == 10
+    assert not any("more" in line for line in lines)
+
+
+# ── verify_api() task reconciliation ──────────────────────────────────────────
+
+
+def engine_task(task_id, name=None):
+    return {"id": task_id, "name": name, "rules": []}
+
+
+@pytest.fixture
+def api_tasks(monkeypatch):
+    """Stub the three task searches verify_api's config phase makes.
+
+    `shield` and `engine_scoped` back the task_ids-filtered searches, and
+    `engine_all` backs the unscoped one that finds what the run never recorded.
+    """
+    state = {"shield": [], "engine_scoped": [], "engine_all": []}
+
+    monkeypatch.setattr(
+        vc,
+        "shield_paginate",
+        lambda *a, **k: state["shield"],
+    )
+    monkeypatch.setattr(
+        vc,
+        "engine_paginate",
+        # The unscoped listing is the one with an empty search body.
+        lambda path, body, *a, **k: state["engine_scoped" if body else "engine_all"],
+    )
+    return state
+
+
+@pytest.mark.unit_tests
+def test_verify_api_names_tasks_missing_from_the_engine(api_tasks, capsys):
+    api_tasks["shield"] = [
+        engine_task("a", "Support Copilot"),
+        engine_task("b", "Claims"),
+    ]
+    api_tasks["engine_scoped"] = [engine_task("a", "Support Copilot")]
+    api_tasks["engine_all"] = [engine_task("a", "Support Copilot")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        migrated_task_ids=["a", "b"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is False
+    assert "1 migrated task(s) missing from the Engine" in out
+    assert "b (Claims)" in out  # named, so the operator needn't look it up
+
+
+@pytest.mark.unit_tests
+def test_verify_api_names_requested_tasks_that_never_migrated(api_tasks, capsys):
+    """The regression this check exists for: every count agrees, yet a task the
+    operator asked for is absent from the migration entirely."""
+    api_tasks["shield"] = [engine_task("a"), engine_task("b")]
+    api_tasks["engine_scoped"] = [engine_task("a"), engine_task("b")]
+    api_tasks["engine_all"] = [engine_task("a"), engine_task("b")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=["a", "b", "c"],
+        migrated_task_ids=["a", "b"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is False
+    # The count comparison is happy — 2 recorded, 2 in the Engine.
+    assert "✓          tasks" in out
+    assert "1 requested task(s) never migrated" in out
+    assert "       c" in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_skips_the_never_migrated_check_when_unscoped(api_tasks, capsys):
+    """An unscoped run has no requested set, so the check must stay silent
+    rather than claim a ✓ it cannot support."""
+    api_tasks["shield"] = [engine_task("a")]
+    api_tasks["engine_scoped"] = [engine_task("a")]
+    api_tasks["engine_all"] = [engine_task("a")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=None,
+        migrated_task_ids=["a"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is True
+    assert "requested task(s)" not in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_reconciles_when_the_config_phase_recorded_nothing(
+    api_tasks,
+    capsys,
+):
+    """Every requested ID missing from Shield leaves migrated_task_ids empty, so
+    none of the searches run and the results keys are absent."""
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=["a", "b"],
+        migrated_task_ids=None,
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is False
+    assert "2 requested task(s) never migrated" in out
+    assert "       a" in out
+    assert "       b" in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_lists_engine_tasks_outside_the_migration(api_tasks, capsys):
+    api_tasks["shield"] = [engine_task("a")]
+    api_tasks["engine_scoped"] = [engine_task("a")]
+    api_tasks["engine_all"] = [engine_task("a"), engine_task("x", "Legacy Chatbot")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        migrated_task_ids=["a"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    # Informational only — the Engine legitimately holds data this run didn't
+    # insert, so it must not fail the verification.
+    assert ok is True
+    assert "1 active task(s) in the Engine were not part of this migration" in out
+    assert "spans every org visible to ENGINE_API_KEY" in out
+    assert "x (Legacy Chatbot)" in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_reports_a_clean_reconciliation(api_tasks, capsys):
+    api_tasks["shield"] = [engine_task("a")]
+    api_tasks["engine_scoped"] = [engine_task("a")]
+    api_tasks["engine_all"] = [engine_task("a")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=["a"],
+        migrated_task_ids=["a"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is True
+    assert "✓ all 1 requested task(s) migrated" in out
+    assert "✓ all 1 migrated task(s) present in the Engine" in out
+    assert "✓ no tasks in the Engine outside this migration" in out
+    assert "RESULT: ALL MATCH ✓" in out
+
+
+# ── caveat_lines() ────────────────────────────────────────────────────────────
+
+ALL_PHASES = ["config", "inferences", "feedback"]
+
+
+def caveats(*args, **kwargs):
+    """The caveat block as one whitespace-normalized string.
+
+    The lines are textwrap'd to the report width, so a phrase under assertion
+    is as likely as not to straddle a line break."""
+    return " ".join(" ".join(vc.caveat_lines(*args, **kwargs)).split())
+
+
+@pytest.mark.unit_tests
+def test_caveats_always_say_the_comparison_is_counts_only():
+    for api_mode in (True, False):
+        text = caveats(api_mode, ALL_PHASES)
+        assert "Counts only" in text
+        assert "field-level fidelity" in text
+
+
+@pytest.mark.unit_tests
+def test_caveats_name_the_phases_that_were_not_checked():
+    text = caveats(True, ["config"])
+
+    assert "Not checked here: inferences, feedback." in text
+
+
+@pytest.mark.unit_tests
+def test_caveats_omit_the_phase_bullet_when_everything_ran():
+    text = caveats(True, ALL_PHASES)
+
+    assert "Not checked here" not in text
+
+
+@pytest.mark.unit_tests
+def test_api_mode_caveats_name_the_checks_only_sql_mode_covers():
+    text = caveats(True, ALL_PHASES)
+
+    assert "rule-result detail tree" in text
+    assert "org_id" in text
+    assert "Re-run without --api-mode" in text
+
+
+@pytest.mark.unit_tests
+def test_sql_mode_caveats_do_not_claim_api_mode_limitations():
+    text = caveats(False, ALL_PHASES)
+
+    assert "--api-mode" not in text
+    assert "ENGINE_API_KEY" not in text
+    # …but it does disclose its own archived-task exclusion.
+    assert "archived tasks" in text
+
+
+@pytest.mark.unit_tests
+def test_api_mode_caveats_flag_that_an_unscoped_run_cannot_check_for_skipped_tasks():
+    unscoped = caveats(True, ALL_PHASES, task_ids=None)
+    scoped = caveats(True, ALL_PHASES, task_ids=["a"])
+
+    assert "not --task-ids scoped" in unscoped
+    assert "not --task-ids scoped" not in scoped
+
+
+@pytest.mark.unit_tests
+def test_caveats_mention_taskless_inferences_only_when_that_row_was_printed():
+    printed = caveats(True, ALL_PHASES, taskless_inference_ids=["i1"])
+    # The row only renders when the inferences phase completed, so claiming a
+    # caveat about it otherwise would describe output that isn't there.
+    phase_skipped = caveats(True, ["config"], taskless_inference_ids=["i1"])
+    none_recorded = caveats(True, ALL_PHASES)
+
+    assert "taskless_inferences row" in printed
+    assert "taskless_inferences row" not in phase_skipped
+    assert "taskless_inferences row" not in none_recorded
+
+
+@pytest.mark.unit_tests
+def test_caveats_are_appended_to_both_reports(api_tasks, stub_conn, capsys):
+    api_tasks["engine_all"] = [engine_task("a")]
+    vc.verify_api(None, None, migrated_task_ids=["a"], phases_completed=["config"])
+    assert "Caveats — what the result above does and does not cover" in (
+        capsys.readouterr().out
+    )
+
+    stub_conn.default = 0
+    vc.verify(StubEngine(stub_conn), StubEngine(stub_conn), None, None, "org-1")
+    assert "Caveats — what the result above does and does not cover" in (
+        capsys.readouterr().out
+    )
