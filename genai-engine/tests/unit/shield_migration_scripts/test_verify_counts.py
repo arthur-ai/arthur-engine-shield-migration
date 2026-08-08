@@ -212,59 +212,100 @@ def test_verify_flags_rows_missing_an_org_id(monkeypatch, stub_conn, capsys):
     assert "missing org ids: 3" in capsys.readouterr().out
 
 
-# ── task_id_lines() ───────────────────────────────────────────────────────────
+# ── id_lines() / link_lines() ─────────────────────────────────────────────────
 
 
 @pytest.mark.unit_tests
-def test_task_id_lines_names_tasks_when_the_name_is_known():
-    lines = vc.task_id_lines(["a", "b"], {"a": "Support Copilot"})
+def test_id_lines_names_entries_when_the_name_is_known():
+    lines = vc.id_lines(["a", "b"], {"a": "Support Copilot"})
 
-    assert lines == ["       a (Support Copilot)", "       b"]
+    assert lines == [f"{vc.ROW}a (Support Copilot)", f"{vc.ROW}b"]
 
 
 @pytest.mark.unit_tests
-def test_task_id_lines_truncates_past_the_limit():
-    lines = vc.task_id_lines([str(n) for n in range(10)], {}, limit=3)
+def test_id_lines_truncates_past_the_limit():
+    lines = vc.id_lines([str(n) for n in range(10)], {}, limit=3)
 
     assert len(lines) == 4
     assert lines[-1].strip().startswith("… 7 more")
 
 
 @pytest.mark.unit_tests
-def test_task_id_lines_lists_everything_when_unlimited():
-    lines = vc.task_id_lines([str(n) for n in range(10)], {})
+def test_id_lines_lists_everything_when_unlimited():
+    lines = vc.id_lines([str(n) for n in range(10)], {})
 
     assert len(lines) == 10
     assert not any("more" in line for line in lines)
 
 
-# ── verify_api() task reconciliation ──────────────────────────────────────────
+@pytest.mark.unit_tests
+def test_link_lines_names_both_sides_of_the_pair():
+    lines = vc.link_lines([("t1", "r1")], {"t1": "Copilot"}, {"r1": "PII"})
+
+    assert lines == [f"{vc.ROW}t1 (Copilot) → r1 (PII)"]
 
 
-def engine_task(task_id, name=None):
-    return {"id": task_id, "name": name, "rules": []}
+@pytest.mark.unit_tests
+def test_link_lines_falls_back_to_bare_ids_and_truncates():
+    pairs = [(f"t{n}", f"r{n}") for n in range(10)]
+    lines = vc.link_lines(pairs, {}, {}, limit=2)
+
+    assert lines[0] == f"{vc.ROW}t0 → r0"
+    assert lines[-1].strip().startswith("… 8 more")
+
+
+# ── verify_api() config reconciliation ────────────────────────────────────────
+
+
+def engine_task(task_id, name=None, rules=()):
+    return {
+        "id": task_id,
+        "name": name,
+        "rules": [{"id": r, "name": n} for r, n in rules],
+    }
+
+
+def rule(rule_id, name=None):
+    return {"id": rule_id, "name": name}
 
 
 @pytest.fixture
 def api_tasks(monkeypatch):
-    """Stub the three task searches verify_api's config phase makes.
+    """Stub every search verify_api's config phase makes.
 
-    `shield` and `engine_scoped` back the task_ids-filtered searches, and
-    `engine_all` backs the unscoped one that finds what the run never recorded.
+    Task searches: `shield` and `engine_scoped` back the task_ids-filtered ones,
+    `engine_all` the unscoped one. Rule searches use the `*_rules` keys, with
+    `shield_archived_rules` backing the include_archived request the Engine has
+    no equivalent for.
     """
-    state = {"shield": [], "engine_scoped": [], "engine_all": []}
+    state = {
+        "shield": [],
+        "engine_scoped": [],
+        "engine_all": [],
+        "shield_rules": [],
+        "shield_archived_rules": [],
+        "engine_rules": [],
+        "engine_all_rules": [],
+    }
 
-    monkeypatch.setattr(
-        vc,
-        "shield_paginate",
-        lambda *a, **k: state["shield"],
-    )
-    monkeypatch.setattr(
-        vc,
-        "engine_paginate",
-        # The unscoped listing is the one with an empty search body.
-        lambda path, body, *a, **k: state["engine_scoped" if body else "engine_all"],
-    )
+    def shield_paginate(path, body, *a, **k):
+        if "rules" in path:
+            key = (
+                "shield_archived_rules"
+                if body.get("include_archived")
+                else "shield_rules"
+            )
+            return state[key]
+        return state["shield"]
+
+    def engine_paginate(path, body, *a, **k):
+        # The unscoped listings are the ones with an empty search body.
+        if "rules" in path:
+            return state["engine_rules" if body else "engine_all_rules"]
+        return state["engine_scoped" if body else "engine_all"]
+
+    monkeypatch.setattr(vc, "shield_paginate", shield_paginate)
+    monkeypatch.setattr(vc, "engine_paginate", engine_paginate)
     return state
 
 
@@ -490,3 +531,182 @@ def test_caveats_are_appended_to_both_reports(api_tasks, stub_conn, capsys):
     assert "Caveats — what the result above does and does not cover" in (
         capsys.readouterr().out
     )
+
+
+# ── link_reconciliation() ─────────────────────────────────────────────────────
+
+
+@pytest.mark.unit_tests
+def test_link_reconciliation_names_missing_and_unexpected_links():
+    shield = [engine_task("a", "Support Copilot", [("r1", "PII"), ("r2", "Toxicity")])]
+    engine = [engine_task("a", "Support Copilot", [("r1", "PII"), ("r9", "Keyword")])]
+
+    lines, ok = vc.link_reconciliation(shield, engine)
+    text = "\n".join(lines)
+
+    assert ok is False
+    assert "1 link(s) missing from the Engine" in text
+    assert "a (Support Copilot) → r2 (Toxicity)" in text
+    assert "1 unexpected link(s) in the Engine" in text
+    assert "a (Support Copilot) → r9 (Keyword)" in text
+
+
+@pytest.mark.unit_tests
+def test_link_reconciliation_catches_offsetting_link_changes(api_tasks, capsys):
+    """The whole reason this check exists: the task_rule_links row sums link
+    counts, so one dropped link and one added link cancel out and it reports ✓."""
+    api_tasks["shield"] = [engine_task("a", "Copilot", [("r1", "PII")])]
+    api_tasks["engine_scoped"] = [engine_task("a", "Copilot", [("r9", "Keyword")])]
+    api_tasks["engine_all"] = api_tasks["engine_scoped"]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        migrated_task_ids=["a"],
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    # The count row is happy — one link on each side.
+    assert "✓          task_rule_links              shield=1  engine=1" in out
+    # …and the set diff is not.
+    assert ok is False
+    assert "1 link(s) missing from the Engine" in out
+    assert "1 unexpected link(s) in the Engine" in out
+
+
+@pytest.mark.unit_tests
+def test_link_reconciliation_treats_an_engine_only_task_as_unexpected_links():
+    """A Shield-keyed loop would drop this task's links entirely."""
+    lines, ok = vc.link_reconciliation([], [engine_task("x", "Rogue", [("r1", "PII")])])
+    text = "\n".join(lines)
+
+    assert ok is False
+    assert "1 unexpected link(s) in the Engine" in text
+    assert "x (Rogue) → r1 (PII)" in text
+
+
+@pytest.mark.unit_tests
+def test_link_reconciliation_reports_a_clean_diff():
+    tasks = [engine_task("a", "Copilot", [("r1", "PII"), ("r2", "Toxicity")])]
+
+    lines, ok = vc.link_reconciliation(tasks, tasks)
+
+    assert ok is True
+    assert "✓ all 2 task→rule link(s) reproduced in the Engine" in "\n".join(lines)
+
+
+# ── rule_reconciliation() ─────────────────────────────────────────────────────
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_names_active_rules_missing_from_the_engine():
+    lines, ok = vc.rule_reconciliation(
+        ["r1", "r2"],
+        shield_rules=[rule("r1", "PII"), rule("r2", "Toxicity")],
+        shield_archived_rules=[],
+        engine_rules=[rule("r1", "PII")],
+        engine_all_rules=[],
+    )
+    text = "\n".join(lines)
+
+    assert ok is False
+    assert "1 active rule(s) missing from the Engine" in text
+    assert "r2 (Toxicity)" in text
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_reports_archived_rules_as_unverifiable_not_missing():
+    """migrated_rule_ids includes archived rules, and the Engine rule search can
+    never return them. Diffing naively would flag every one as missing."""
+    lines, ok = vc.rule_reconciliation(
+        ["r1", "arch1", "arch2"],
+        shield_rules=[rule("r1", "PII")],
+        shield_archived_rules=[rule("arch1", "Old PII"), rule("arch2", "Old Tox")],
+        engine_rules=[rule("r1", "PII")],
+        engine_all_rules=[],
+    )
+    text = "\n".join(lines)
+
+    assert ok is True  # archived rules must not fail the run
+    assert "2 recorded rule(s) are archived in Shield" in text
+    assert "missing from the Engine" not in text
+    assert "unknown to Shield" not in text
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_computes_the_archived_bucket_by_set_difference():
+    """If Shield's include_archived ever returned actives too, a naive count
+    would inflate the archived bucket and hide a real miss."""
+    lines, ok = vc.rule_reconciliation(
+        ["r1", "arch1"],
+        shield_rules=[rule("r1", "PII")],
+        # Echoes the active rule alongside the archived one.
+        shield_archived_rules=[rule("r1", "PII"), rule("arch1", "Old PII")],
+        engine_rules=[],
+        engine_all_rules=[],
+    )
+    text = "\n".join(lines)
+
+    assert "1 recorded rule(s) are archived in Shield" in text
+    # r1 is active in Shield and absent from the Engine — still a defect.
+    assert ok is False
+    assert "1 active rule(s) missing from the Engine" in text
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_flags_rules_unknown_to_shield():
+    lines, ok = vc.rule_reconciliation(
+        ["r1", "ghost"],
+        shield_rules=[rule("r1", "PII")],
+        shield_archived_rules=[],
+        engine_rules=[rule("r1", "PII")],
+        engine_all_rules=[],
+    )
+    text = "\n".join(lines)
+
+    assert ok is True  # informational, not a defect
+    assert "1 recorded rule(s) are unknown to Shield entirely" in text
+    assert "ghost" in text
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_lists_engine_rules_outside_the_migration():
+    lines, ok = vc.rule_reconciliation(
+        ["r1"],
+        shield_rules=[rule("r1", "PII")],
+        shield_archived_rules=[],
+        engine_rules=[rule("r1", "PII")],
+        engine_all_rules=[rule("r1", "PII"), rule("d1", "Default Hallucination")],
+    )
+    text = "\n".join(lines)
+
+    assert ok is True  # informational only
+    assert "1 active rule(s) in the Engine were not part of this migration" in text
+    assert "includes every default rule" in text
+    assert "d1 (Default Hallucination)" in text
+
+
+@pytest.mark.unit_tests
+def test_rule_reconciliation_reports_a_clean_diff():
+    lines, ok = vc.rule_reconciliation(
+        ["r1"],
+        shield_rules=[rule("r1", "PII")],
+        shield_archived_rules=[],
+        engine_rules=[rule("r1", "PII")],
+        engine_all_rules=[rule("r1", "PII")],
+    )
+    text = "\n".join(lines)
+
+    assert ok is True
+    assert "✓ all 1 active rule(s) present in the Engine" in text
+    assert "✓ no rules in the Engine outside this migration" in text
+
+
+@pytest.mark.unit_tests
+def test_caveats_flag_that_archived_rules_cannot_be_checked_via_the_api():
+    with_rules = caveats(True, ALL_PHASES, migrated_rule_ids=["r1"])
+    without = caveats(True, ALL_PHASES)
+
+    assert "Archived rules cannot be verified through the Engine API" in with_rules
+    assert "Archived rules cannot be verified" not in without
