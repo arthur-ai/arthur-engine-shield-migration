@@ -447,11 +447,52 @@ everything matches, `1` otherwise.
 Only sections whose phase is recorded as completed in the checkpoint file are
 verified — a run that only finished `config` gets only the Config section.
 
+Both modes close with a **Caveats** block spelling out what the result does and
+does not cover, so a screen of green ticks isn't mistaken for proof the
+migration was byte-for-byte correct. The bullets are computed from the run, not
+boilerplate: phases that weren't checked are named, and caveats about output
+that wasn't produced are omitted. The standing ones are that every comparison is
+a row count rather than a field-level check; that the Config `shield=` column
+for tasks (and, in SQL mode, rules) is the count the checkpoint recorded rather
+than a live Shield query; and that Engine-side counts are scoped to the IDs the
+checkpoint recorded, so a truncated checkpoint narrows what is compared instead
+of failing.
+
 With `--api-mode` the script verifies through the **Shield and Engine APIs**
 instead of the databases. Coverage is shallower: inferences and feedback are
 compared by window counts (plus per-ID checks of recorded task-less
 inferences), and the rule-result/detail tables and org-id sanity check are
 skipped since they aren't reachable through the APIs.
+
+API mode also adds a **task reconciliation** block to the Config section, which
+names tasks rather than just counting them. It reports three sets, each diffed
+against a different baseline, so none of them subsumes another:
+
+| Set | Diff | Answers |
+|---|---|---|
+| requested task(s) never migrated | `task_ids` − `migrated_task_ids` | did everything I asked for get migrated? |
+| migrated task(s) missing from the Engine | `migrated_task_ids` − Engine | is everything the run inserted still there? |
+| active task(s) not part of this migration | Engine − `migrated_task_ids` | what is in the Engine that this run didn't put there? |
+
+The first two are defects and exit `1`. The third is informational and does not
+affect the exit code — an Engine legitimately holds data this run never
+inserted.
+
+Three caveats:
+
+- **"Never migrated" needs a `--task-ids` run.** Without one the checkpoint
+  records no requested scope, and the line is omitted rather than shown as a ✓
+  it can't support. This is the one check that catches a task dropping out of
+  scope silently: if a requested ID is archived in Shield or mistyped,
+  `migrate_shield_to_engine.py` warns once at migration time and records
+  nothing, and every other count in this report is scoped to
+  `migrated_task_ids` — so without it the run reports `ALL MATCH ✓`.
+- **The "not part of this migration" list spans every org.** The task search
+  API has no org filter and `ENGINE_API_KEY` is an `ORG_ADMIN` key, so the list
+  covers every org the key can see, not just `ENGINE_ORG_ID`.
+- **Engine-side lists cover active tasks only**, since the task search excludes
+  archived tasks by default. A migrated task later archived in the Engine shows
+  up as missing, not as an extra.
 
 ### Setup
 
@@ -462,6 +503,10 @@ variables are the identical set with an `ENGINE_` prefix.
 API mode instead uses the same API variables as `migrate_shield_to_engine.py`:
 `SHIELD_BASE_URL`, `SHIELD_API_KEY`, `ENGINE_BASE_URL`, `ENGINE_API_KEY`
 (plus optional `MIGRATION_TIMEOUT` / `MIGRATION_MAX_WORKERS`).
+
+| Variable | Description |
+|---|---|
+| `VERIFY_TASK_LIST_LIMIT` | *(optional)* rows of the "not part of this migration" task list to print, default `20`. `0` lists them all. Tasks reported as never migrated or missing are always listed in full. |
 
 Shield (source) database:
 
@@ -588,6 +633,11 @@ Config (migrated IDs recorded in the save file)
   ✓          task_rule_links              shield=213  engine=213
   ✓          rules                        shield=124  engine=124
 
+  Task reconciliation
+    ✓ all 42 requested task(s) migrated
+    ✓ all 42 migrated task(s) present in the Engine
+    ✓ no tasks in the Engine outside this migration
+
 Inferences
   ✓          inferences                   shield=1,204,556  engine=1,204,556
   ✓          taskless_inferences          shield=31  engine=31
@@ -598,6 +648,49 @@ Feedback
 ======================================================================
   RESULT: ALL MATCH ✓
 ======================================================================
+
+Caveats — what the result above does and does not cover:
+  • Counts only. Matching totals do not prove field-level fidelity: an
+    inference whose contents were truncated or mangled in transit still
+    counts as one row on each side.
+  • In the Config section the shield= column for tasks is the count the save
+    file recorded, not a live Shield query. Those rows prove the Engine
+    holds what the run believed it migrated — not that the run picked up
+    everything Shield held.
+  • Engine-side counts are scoped to the IDs the save file recorded, so a
+    truncated or mismatched save file narrows what is compared rather than
+    failing. A ✓ against a save file that recorded little proves little.
+  • API mode does not check the rule-result tables, the rule-result detail
+    tree (hallucination claims, PII entities, keyword and regex matches,
+    toxicity scores), or that org-scoped Engine rows carry an org_id. Re-run
+    without --api-mode to cover those.
+  • The "not part of this migration" list spans every org visible to
+    ENGINE_API_KEY — the task search has no org filter — and lists active
+    tasks only, so archived Engine tasks never appear in it.
+```
+
+When the reconciliation finds something, it names the tasks instead of leaving
+the operator to diff IDs by hand:
+
+```
+Config (migrated IDs recorded in the save file)
+  ✗ MISMATCH tasks                        shield=42  engine=40
+  ✓          task_rule_links              shield=213  engine=213
+  ✓          rules                        shield=124  engine=124
+
+  Task reconciliation
+    ✗ 1 requested task(s) never migrated:
+       9z8y7x6w-…
+      (absent from Shield when the run fetched tasks, or the config phase
+       stopped before recording them)
+    ✗ 2 migrated task(s) missing from the Engine:
+       a1b2c3d4-… (Support Copilot)
+       c3d4e5f6-… (Claims Triage)
+    ! 415 active task(s) in the Engine were not part of this migration
+      (spans every org visible to ENGINE_API_KEY; informational only):
+       e5f6a7b8-… (Legacy Chatbot)
+       g7h8i9j0-… (Doc QA)
+       … 413 more (set VERIFY_TASK_LIST_LIMIT=0 to list them all)
 ```
 
 ## `onboard_tasks_from_csv.py`
