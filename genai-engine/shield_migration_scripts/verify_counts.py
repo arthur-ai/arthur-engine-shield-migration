@@ -362,18 +362,37 @@ def task_reconciliation(
     that never reached `migrated_task_ids` is invisible to every other check in
     this report, because every count is scoped to that list.
 
-    Returns (lines, ok). Only the first two sets are migration defects; the
-    unrecorded tasks are informational, and with an ORG_ADMIN ENGINE_API_KEY the
-    unscoped search spans every org, not just ENGINE_ORG_ID.
+    Returns (lines, ok). Defects are the tasks that never migrated and the
+    migrated tasks missing from the Engine. Tasks the run left unrecorded but
+    which are present in the Engine, and Engine tasks outside the migration, are
+    informational — and with an ORG_ADMIN ENGINE_API_KEY the unscoped search
+    spans every org, not just ENGINE_ORG_ID.
 
     A set is reported only when the inputs it needs are present, so a run that
     stopped early still reports what it can instead of asserting a false ✓.
     """
     lines = ["    Tasks"]
     shield_names = {t["id"]: t.get("name") for t in shield_tasks}
+    engine_all_ids = {t["id"] for t in engine_all_tasks}
+    names = dict(shield_names)
+    names.update({t["id"]: t.get("name") for t in engine_all_tasks if t.get("name")})
     migrated = set(migrated_task_ids)
 
-    never_migrated = [task_id for task_id in task_ids if task_id not in migrated]
+    # A requested task the run didn't record splits two ways, and conflating
+    # them cries wolf: re-running a phase over data the Engine already holds
+    # inserts nothing, so the bulk endpoints return nothing and the checkpoint
+    # records nothing — even though the task is right there. Only a requested
+    # task that is *also* absent from the Engine actually failed to migrate.
+    unrecorded = [
+        task_id
+        for task_id in task_ids
+        if task_id not in migrated and task_id in engine_all_ids
+    ]
+    never_migrated = [
+        task_id
+        for task_id in task_ids
+        if task_id not in migrated and task_id not in engine_all_ids
+    ]
     if task_ids:
         if never_migrated:
             lines.append(
@@ -382,13 +401,28 @@ def task_reconciliation(
             )
             # Usually unnamed: being absent from the Shield search the run
             # performed is the very reason they never migrated.
-            lines.extend(id_lines(never_migrated, shield_names))
+            lines.extend(id_lines(never_migrated, names))
             lines.append(
                 f"{CONT}(absent from Shield when the run fetched tasks, or the "
                 f"config phase",
             )
             lines.append(f"{CONT} stopped before recording them)")
-        else:
+        if unrecorded:
+            lines.append(
+                f"{BULLET}! {fmt(len(unrecorded))} requested task(s) are in the "
+                f"Engine but were not",
+            )
+            lines.append(f"{CONT}recorded by this run:")
+            lines.extend(id_lines(unrecorded, names))
+            lines.append(
+                f"{CONT}(the run inserted nothing for them — they already "
+                f"existed — so it",
+            )
+            lines.append(
+                f"{CONT} recorded nothing. Re-run with --recover to rebuild the "
+                f"save file.)",
+            )
+        if not never_migrated and not unrecorded:
             lines.append(
                 f"{BULLET}✓ all {fmt(len(task_ids))} requested task(s) migrated",
             )
@@ -807,9 +841,14 @@ def verify_api(
                 "count",
                 "tasks",
             )
+        if "config" in phases_completed and (migrated_task_ids or task_ids):
             # Unscoped, to find what is in the Engine that this run never
             # recorded. The search has no org filter, so an ORG_ADMIN key sees
             # every org — the report says so rather than pretending otherwise.
+            #
+            # Also gated on task_ids, not just migrated_task_ids: it is the only
+            # way to tell a requested task the run never recorded *because it
+            # already existed* from one that genuinely never migrated.
             futures["engine_all_tasks"] = executor.submit(
                 engine_paginate,
                 "/api/v2/tasks/search",

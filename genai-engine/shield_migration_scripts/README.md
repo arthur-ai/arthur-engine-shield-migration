@@ -501,7 +501,8 @@ Each set is diffed against a different baseline, so none subsumes another:
 
 | Group | Set | Diff | Cost | Exit code |
 |---|---|---|---|---|
-| Tasks | requested task(s) never migrated | `task_ids` − `migrated_task_ids` | free | fails |
+| Tasks | requested task(s) never migrated | (`task_ids` − `migrated_task_ids`) − Engine | free | fails |
+| Tasks | requested task(s) in the Engine but not recorded | (`task_ids` − `migrated_task_ids`) ∩ Engine | free | informational |
 | Tasks | migrated task(s) missing from the Engine | `migrated_task_ids` − Engine | free | fails |
 | Tasks | active task(s) not part of this migration | Engine − `migrated_task_ids` | 1 call | informational |
 | Links | link(s) missing from the Engine | Shield task rules − Engine task rules | free | fails |
@@ -536,6 +537,15 @@ Four things worth knowing:
   `migrate_shield_to_engine.py` warns once at migration time and records
   nothing, and every other count in this report is scoped to
   `migrated_task_ids` — so without it the run reports `ALL MATCH ✓`.
+- **A requested task the run didn't record is not automatically a defect.**
+  Re-running a phase over data the Engine already holds inserts nothing, so the
+  bulk endpoints return nothing and the checkpoint records nothing — leaving
+  `phases_completed: ["config"]` alongside an empty `migrated_task_ids` even
+  though the tasks are present. Those are reported separately as
+  `! requested task(s) are in the Engine but were not recorded by this run`,
+  pointing at `--recover` to rebuild the checkpoint, and they do not affect the
+  exit code. Only a requested task that is *also* absent from the Engine counts
+  as never migrated.
 - **The "not part of this migration" lists span every org and cover active rows
   only.** Neither the task nor the rule search has an org filter, and
   `ENGINE_API_KEY` is an `ORG_ADMIN` key, so both lists cover every org the key

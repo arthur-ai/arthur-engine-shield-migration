@@ -710,3 +710,76 @@ def test_caveats_flag_that_archived_rules_cannot_be_checked_via_the_api():
 
     assert "Archived rules cannot be verified through the Engine API" in with_rules
     assert "Archived rules cannot be verified" not in without
+
+
+# ── requested-but-unrecorded vs never-migrated ────────────────────────────────
+
+
+@pytest.mark.unit_tests
+def test_verify_api_does_not_call_present_tasks_never_migrated(api_tasks, capsys):
+    """Re-running a phase over data the Engine already holds inserts nothing, so
+    the bulk endpoints return nothing and the checkpoint records nothing. Those
+    tasks are present, not lost, and must not fail the run."""
+    api_tasks["engine_all"] = [engine_task("a", "Copilot"), engine_task("b", "Claims")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=["a", "b"],
+        migrated_task_ids=None,
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is True  # under-recorded, not lost
+    assert "2 requested task(s) are in the Engine but were not" in out
+    assert "Re-run with --recover" in out
+    assert "never migrated" not in out
+    assert "a (Copilot)" in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_splits_unrecorded_from_genuinely_missing(api_tasks, capsys):
+    """The bogus ID is absent from the Engine and is a real defect; the two that
+    are present are only under-recorded."""
+    api_tasks["engine_all"] = [engine_task("a", "Copilot"), engine_task("b", "Claims")]
+
+    ok = vc.verify_api(
+        None,
+        None,
+        task_ids=["a", "b", "ghost"],
+        migrated_task_ids=None,
+        phases_completed=["config"],
+    )
+
+    out = capsys.readouterr().out
+    assert ok is False  # the genuinely absent one still fails
+    assert "1 requested task(s) never migrated" in out
+    assert "       ghost" in out
+    assert "2 requested task(s) are in the Engine but were not" in out
+
+
+@pytest.mark.unit_tests
+def test_verify_api_fetches_the_engine_listing_for_an_unrecorded_run(api_tasks):
+    """The split needs the unscoped listing, which used to be gated on
+    migrated_task_ids alone and so was never fetched in exactly this case."""
+    seen = []
+    inner = vc.engine_paginate
+
+    def spy(path, body, *a, **k):
+        seen.append((path, bool(body)))
+        return inner(path, body, *a, **k)
+
+    vc.engine_paginate = spy
+    try:
+        vc.verify_api(
+            None,
+            None,
+            task_ids=["a"],
+            migrated_task_ids=None,
+            phases_completed=["config"],
+        )
+    finally:
+        vc.engine_paginate = inner
+
+    assert ("/api/v2/tasks/search", False) in seen
