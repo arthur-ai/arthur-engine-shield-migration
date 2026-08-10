@@ -31,6 +31,12 @@ Engine DB connection (target): same variables with an ENGINE_ prefix
 The Engine org the data was migrated into:
     ENGINE_ORG_ID
 
+API mode (--api-mode) uses the same API variables as migrate_shield_to_engine.py
+    SHIELD_BASE_URL / SHIELD_API_KEY
+    ENGINE_BASE_URL / ENGINE_API_KEY
+    VERIFY_LIST_LIMIT               (optional, rows to print of the unbounded
+                                     reconciliation lists; 0 = all)
+
 Usage:
     python verify_counts.py --save-file migration_states/migration_state_2026-01-21_to_2026-07-20.json
 """
@@ -39,6 +45,7 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -71,6 +78,16 @@ MIGRATION_TIMEOUT = int(
 MAX_WORKERS = int(os.getenv("MIGRATION_MAX_WORKERS", default=10))
 MAX_ATTEMPTS = 6
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# Caps the unbounded lists: the "not part of this migration" sets (an Engine
+# legitimately holds thousands of tasks and rules this migration never touched)
+# and the task→rule link sets (a tasks × rules cross product). Lists bounded by
+# the migration's own recorded IDs always print in full. 0 lifts the cap.
+LIST_LIMIT = int(os.getenv("VERIFY_LIST_LIMIT", default=20))
+# Each task in a search response embeds its full rules and metrics, and each rule
+# its full config, so a 4,999-row page is a huge payload against a 30s
+# MIGRATION_TIMEOUT. The unscoped Engine listings page small.
+SEARCH_PAGE_SIZE = 500
 
 
 def request_with_retry(method, url, **kwargs):
@@ -154,7 +171,7 @@ def engine_call(method, path, body=None, params=None):
     return r.json()
 
 
-def engine_paginate(path, body, count_key, items_key):
+def engine_paginate(path, body, count_key, items_key, page_size=SHIELD_PAGE_SIZE):
     """Fetch all pages from an Engine POST search endpoint. Pages start at 0."""
     page, all_items = 0, []
     while True:
@@ -162,7 +179,7 @@ def engine_paginate(path, body, count_key, items_key):
             "POST",
             path,
             body=body,
-            params={"page_size": SHIELD_PAGE_SIZE, "page": page},
+            params={"page_size": page_size, "page": page},
         )
         total = resp.get(count_key, 0)
         batch = resp.get(items_key, [])
@@ -287,6 +304,452 @@ def compare(label, shield_n, engine_n):
     return f"  {status:<10} {label:<28} shield={fmt(shield_n)}  engine={fmt(engine_n)}"
 
 
+# Indents inside a reconciliation sub-block: the bullet, its continuation, and
+# the ID rows hanging off it.
+BULLET = "      "
+CONT = "        "
+ROW = "         "
+
+
+def id_lines(ids, names, limit=0):
+    """Render IDs one per line, naming each when the name is known."""
+    shown = ids[:limit] if limit else ids
+    lines = [
+        f"{ROW}{item_id}" + (f" ({names[item_id]})" if names.get(item_id) else "")
+        for item_id in shown
+    ]
+    if len(ids) > len(shown):
+        lines.append(
+            f"{ROW}… {fmt(len(ids) - len(shown))} more "
+            f"(set VERIFY_LIST_LIMIT=0 to list them all)",
+        )
+    return lines
+
+
+def link_lines(pairs, task_names, rule_names, limit=0):
+    """Render (task_id, rule_id) pairs as `task (name) → rule (name)`."""
+    shown = pairs[:limit] if limit else pairs
+    lines = []
+    for task_id, rule_id in shown:
+        task = f"{task_id}" + (
+            f" ({task_names[task_id]})" if task_names.get(task_id) else ""
+        )
+        rule = f"{rule_id}" + (
+            f" ({rule_names[rule_id]})" if rule_names.get(rule_id) else ""
+        )
+        lines.append(f"{ROW}{task} → {rule}")
+    if len(pairs) > len(shown):
+        lines.append(
+            f"{ROW}… {fmt(len(pairs) - len(shown))} more "
+            f"(set VERIFY_LIST_LIMIT=0 to list them all)",
+        )
+    return lines
+
+
+def task_reconciliation(
+    task_ids,
+    migrated_task_ids,
+    engine_tasks,
+    engine_all_tasks,
+    shield_tasks,
+):
+    """Name the tasks that never migrated, the tasks behind a task-count
+    mismatch, and the Engine tasks this run never recorded.
+
+    Each of the three sets is diffed against a different baseline — what the
+    operator asked for, what the run recorded as inserted, and what is in the
+    Engine — so none of them subsumes another. In particular a requested task
+    that never reached `migrated_task_ids` is invisible to every other check in
+    this report, because every count is scoped to that list.
+
+    Returns (lines, ok). Defects are the tasks that never migrated and the
+    migrated tasks missing from the Engine. Tasks the run left unrecorded but
+    which are present in the Engine, and Engine tasks outside the migration, are
+    informational — and with an ORG_ADMIN ENGINE_API_KEY the unscoped search
+    spans every org, not just ENGINE_ORG_ID.
+
+    A set is reported only when the inputs it needs are present, so a run that
+    stopped early still reports what it can instead of asserting a false ✓.
+    """
+    lines = ["    Tasks"]
+    shield_names = {t["id"]: t.get("name") for t in shield_tasks}
+    engine_all_ids = {t["id"] for t in engine_all_tasks}
+    names = dict(shield_names)
+    names.update({t["id"]: t.get("name") for t in engine_all_tasks if t.get("name")})
+    migrated = set(migrated_task_ids)
+
+    # A requested task the run didn't record splits two ways, and conflating
+    # them cries wolf: re-running a phase over data the Engine already holds
+    # inserts nothing, so the bulk endpoints return nothing and the checkpoint
+    # records nothing — even though the task is right there. Only a requested
+    # task that is *also* absent from the Engine actually failed to migrate.
+    unrecorded = [
+        task_id
+        for task_id in task_ids
+        if task_id not in migrated and task_id in engine_all_ids
+    ]
+    never_migrated = [
+        task_id
+        for task_id in task_ids
+        if task_id not in migrated and task_id not in engine_all_ids
+    ]
+    if task_ids:
+        if never_migrated:
+            lines.append(
+                f"{BULLET}✗ {fmt(len(never_migrated))} requested task(s) never "
+                f"migrated:",
+            )
+            # Usually unnamed: being absent from the Shield search the run
+            # performed is the very reason they never migrated.
+            lines.extend(id_lines(never_migrated, names))
+            lines.append(
+                f"{CONT}(absent from Shield when the run fetched tasks, or the "
+                f"config phase",
+            )
+            lines.append(f"{CONT} stopped before recording them)")
+        if unrecorded:
+            lines.append(
+                f"{BULLET}! {fmt(len(unrecorded))} requested task(s) are in the "
+                f"Engine but were not",
+            )
+            lines.append(f"{CONT}recorded by this run:")
+            lines.extend(id_lines(unrecorded, names))
+            lines.append(
+                f"{CONT}(the run inserted nothing for them — they already "
+                f"existed — so it",
+            )
+            lines.append(
+                f"{CONT} recorded nothing. Re-run with --recover to rebuild the "
+                f"save file.)",
+            )
+        if not never_migrated and not unrecorded:
+            lines.append(
+                f"{BULLET}✓ all {fmt(len(task_ids))} requested task(s) migrated",
+            )
+
+    found = {t["id"] for t in engine_tasks}
+    missing = [task_id for task_id in migrated_task_ids if task_id not in found]
+    if migrated_task_ids:
+        if missing:
+            lines.append(
+                f"{BULLET}✗ {fmt(len(missing))} migrated task(s) missing from "
+                f"the Engine:",
+            )
+            lines.extend(id_lines(missing, shield_names))
+        else:
+            lines.append(
+                f"{BULLET}✓ all {fmt(len(migrated_task_ids))} migrated task(s) "
+                f"present in the Engine",
+            )
+
+    if engine_all_tasks:
+        unrecorded = [t for t in engine_all_tasks if t["id"] not in migrated]
+        if unrecorded:
+            lines.append(
+                f"{BULLET}! {fmt(len(unrecorded))} active task(s) in the Engine "
+                f"were not part of this migration",
+            )
+            lines.append(
+                f"{CONT}(spans every org visible to ENGINE_API_KEY; "
+                f"informational only):",
+            )
+            lines.extend(
+                id_lines(
+                    [t["id"] for t in unrecorded],
+                    {t["id"]: t.get("name") for t in unrecorded},
+                    limit=LIST_LIMIT,
+                ),
+            )
+        else:
+            lines.append(f"{BULLET}✓ no tasks in the Engine outside this migration")
+
+    return lines, not never_migrated and not missing
+
+
+def link_reconciliation(shield_tasks, engine_tasks):
+    """Diff each task's embedded rule set, both directions.
+
+    The task_rule_links row sums link counts across tasks, so one dropped link
+    and one spurious link cancel out and the row reports ✓. This is the check
+    that sees it. Both sides embed archived rules in `rules`, so the comparison
+    is like-for-like.
+
+    Returns (lines, ok). Both directions are defects: either means the Engine's
+    task→rule wiring does not reproduce Shield's.
+    """
+    lines = ["    Task→rule links"]
+
+    def links_of(tasks):
+        return {t["id"]: {r["id"] for r in t.get("rules", [])} for t in tasks}
+
+    shield_links = links_of(shield_tasks)
+    engine_links = links_of(engine_tasks)
+    task_names = {t["id"]: t.get("name") for t in shield_tasks}
+    task_names.update({t["id"]: t.get("name") for t in engine_tasks if t.get("name")})
+    rule_names = {
+        r["id"]: r.get("name")
+        for t in list(shield_tasks) + list(engine_tasks)
+        for r in t.get("rules", [])
+    }
+
+    missing, unexpected = [], []
+    # Union of task IDs: an Engine task with no Shield counterpart contributes
+    # nothing but unexpected links, and would vanish from a Shield-keyed loop.
+    for task_id in sorted(set(shield_links) | set(engine_links)):
+        s_rules = shield_links.get(task_id, set())
+        e_rules = engine_links.get(task_id, set())
+        missing.extend((task_id, rule_id) for rule_id in sorted(s_rules - e_rules))
+        unexpected.extend((task_id, rule_id) for rule_id in sorted(e_rules - s_rules))
+
+    if missing:
+        lines.append(
+            f"{BULLET}✗ {fmt(len(missing))} link(s) missing from the Engine:",
+        )
+        lines.extend(link_lines(missing, task_names, rule_names, limit=LIST_LIMIT))
+    if unexpected:
+        lines.append(
+            f"{BULLET}✗ {fmt(len(unexpected))} unexpected link(s) in the Engine:",
+        )
+        lines.extend(link_lines(unexpected, task_names, rule_names, limit=LIST_LIMIT))
+    if not missing and not unexpected:
+        total = sum(len(rules) for rules in shield_links.values())
+        lines.append(
+            f"{BULLET}✓ all {fmt(total)} task→rule link(s) reproduced in the Engine",
+        )
+
+    return lines, not missing and not unexpected
+
+
+def rule_reconciliation(
+    migrated_rule_ids,
+    shield_rules,
+    shield_archived_rules,
+    engine_rules,
+    engine_all_rules,
+):
+    """Name the active rules missing from the Engine, and account for the
+    recorded rule IDs the Engine's rule search cannot speak to.
+
+    /api/v2/rules/search on the Engine returns active rules only — there is no
+    include_archived on the request schema and query_rules filters on equality —
+    while migrated_rule_ids includes the archived rules that migrate_archived_rules
+    recorded. Diffing the recorded IDs straight against the Engine would therefore
+    report every archived rule as missing. Shield does honour include_archived, so
+    the recorded IDs are partitioned on the Shield side first.
+
+    Returns (lines, ok). Only rules active in Shield and absent from the Engine
+    are defects; archived and Shield-unknown rules are reported as facts the API
+    cannot settle either way.
+    """
+    lines = ["    Rules"]
+    shield_active = {r["id"] for r in shield_rules}
+    # A set difference rather than trusting include_archived to mean
+    # archived-only, so this stays correct under either semantics.
+    shield_archived = {r["id"] for r in shield_archived_rules} - shield_active
+    engine_active = {r["id"] for r in engine_rules}
+    names = {
+        r["id"]: r.get("name") for r in list(shield_rules) + list(shield_archived_rules)
+    }
+
+    missing = sorted(shield_active - engine_active)
+    if missing:
+        lines.append(
+            f"{BULLET}✗ {fmt(len(missing))} active rule(s) missing from the Engine:",
+        )
+        lines.extend(id_lines(missing, names))
+    else:
+        lines.append(
+            f"{BULLET}✓ all {fmt(len(shield_active))} active rule(s) present in "
+            f"the Engine",
+        )
+
+    if shield_archived:
+        lines.append(
+            f"{BULLET}! {fmt(len(shield_archived))} recorded rule(s) are archived "
+            f"in Shield — the Engine rule",
+        )
+        lines.append(
+            f"{CONT}search returns active rules only, so this cannot confirm them.",
+        )
+        lines.append(f"{CONT}Re-run without --api-mode.")
+
+    unknown = sorted(set(migrated_rule_ids) - shield_active - shield_archived)
+    if unknown:
+        lines.append(
+            f"{BULLET}! {fmt(len(unknown))} recorded rule(s) are unknown to "
+            f"Shield entirely:",
+        )
+        lines.extend(id_lines(unknown, names, limit=LIST_LIMIT))
+
+    if engine_all_rules:
+        recorded = set(migrated_rule_ids)
+        unrecorded = [r for r in engine_all_rules if r["id"] not in recorded]
+        if unrecorded:
+            lines.append(
+                f"{BULLET}! {fmt(len(unrecorded))} active rule(s) in the Engine "
+                f"were not part of this migration",
+            )
+            lines.append(
+                f"{CONT}(includes every default rule; spans every org visible to",
+            )
+            lines.append(f"{CONT}ENGINE_API_KEY; informational only):")
+            lines.extend(
+                id_lines(
+                    [r["id"] for r in unrecorded],
+                    {r["id"]: r.get("name") for r in unrecorded},
+                    limit=LIST_LIMIT,
+                ),
+            )
+        else:
+            lines.append(f"{BULLET}✓ no rules in the Engine outside this migration")
+
+    return lines, not missing
+
+
+def config_reconciliation(
+    task_ids,
+    migrated_task_ids,
+    migrated_rule_ids,
+    results,
+):
+    """Assemble the tasks / links / rules sub-blocks under one header.
+
+    Each sub-block appears only when the data backing it was fetched, so a run
+    that recorded no rules doesn't sprout an empty Rules heading.
+    """
+    lines = ["", "  Config reconciliation"]
+    ok = True
+
+    if migrated_task_ids or task_ids:
+        block, block_ok = task_reconciliation(
+            task_ids or [],
+            migrated_task_ids or [],
+            results.get("engine_tasks", []),
+            results.get("engine_all_tasks", []),
+            results.get("shield_tasks", []),
+        )
+        lines.extend(block)
+        ok = ok and block_ok
+
+    if migrated_task_ids and "engine_tasks" in results:
+        block, block_ok = link_reconciliation(
+            results.get("shield_tasks", []),
+            results["engine_tasks"],
+        )
+        lines.extend(block)
+        ok = ok and block_ok
+
+    if migrated_rule_ids and "engine_rules" in results:
+        block, block_ok = rule_reconciliation(
+            migrated_rule_ids,
+            results.get("shield_rules", []),
+            results.get("shield_archived_rules", []),
+            results["engine_rules"],
+            results.get("engine_all_rules", []),
+        )
+        lines.extend(block)
+        ok = ok and block_ok
+
+    return lines, ok
+
+
+REPORT_PHASES = ("config", "inferences", "feedback")
+
+
+def caveat_lines(
+    api_mode,
+    phases_completed,
+    task_ids=None,
+    taskless_inference_ids=None,
+    migrated_rule_ids=None,
+):
+    """What a ✓ above does and does not prove.
+
+    The counts are the strongest evidence this script can gather over a
+    migration of this size, and they read like more than that — a screen of
+    green ticks invites "the migration is verified" when several whole classes
+    of defect are outside what was compared. Each bullet below names one.
+    """
+    bullets = [
+        "Counts only. Matching totals do not prove field-level fidelity: an "
+        "inference whose contents were truncated or mangled in transit still "
+        "counts as one row on each side.",
+    ]
+
+    unchecked = [p for p in REPORT_PHASES if p not in phases_completed]
+    if unchecked:
+        bullets.append(
+            "Only phases the save file records as completed are checked. "
+            f"Not checked here: {', '.join(unchecked)}.",
+        )
+
+    if "config" in phases_completed:
+        save_file_rows = "tasks" if api_mode else "tasks and rules"
+        bullets.append(
+            f"In the Config section the shield= column for {save_file_rows} is "
+            "the count the save file recorded, not a live Shield query. Those "
+            "rows prove the Engine holds what the run believed it migrated — not "
+            "that the run picked up everything Shield held.",
+        )
+    if api_mode and taskless_inference_ids and "inferences" in phases_completed:
+        bullets.append(
+            "The taskless_inferences row compares the save file's recorded ID "
+            "list against the Engine for the same reason — its shield= side is "
+            "not a live Shield query either.",
+        )
+
+    bullets.append(
+        "Engine-side counts are scoped to the IDs the save file recorded, so a "
+        "truncated or mismatched save file narrows what is compared rather than "
+        "failing. A ✓ against a save file that recorded little proves little.",
+    )
+
+    if api_mode:
+        bullets.append(
+            "API mode does not check the rule-result tables, the rule-result "
+            "detail tree (hallucination claims, PII entities, keyword and regex "
+            "matches, toxicity scores), or that org-scoped Engine rows carry an "
+            "org_id. Re-run without --api-mode to cover those.",
+        )
+        if not task_ids:
+            bullets.append(
+                "This run was not --task-ids scoped, so the never-migrated check "
+                "could not run: nothing here would notice a Shield task the "
+                "migration skipped entirely.",
+            )
+        if migrated_rule_ids:
+            bullets.append(
+                "Archived rules cannot be verified through the Engine API at all "
+                "— its rule search returns active rules only. The rules row and "
+                "the missing-rule list cover the active subset; archived rules "
+                "are counted and named as unverifiable, never as present.",
+            )
+        bullets.append(
+            'The "not part of this migration" lists span every org visible to '
+            "ENGINE_API_KEY — neither the task nor the rule search has an org "
+            "filter — and cover active rows only, so archived Engine tasks and "
+            "rules never appear in them.",
+        )
+    else:
+        bullets.append(
+            "Shield rows referencing archived tasks are excluded from the "
+            "Shield-side counts by design, since archived tasks are not "
+            "migrated. They are reported separately above.",
+        )
+
+    lines = ["", "Caveats — what the result above does and does not cover:"]
+    for bullet in bullets:
+        lines.extend(
+            textwrap.wrap(
+                bullet,
+                width=76,
+                initial_indent="  • ",
+                subsequent_indent="    ",
+            ),
+        )
+    return lines
+
+
 def shield_paginate_feedback(params):
     """Fetch all feedback rows from Shield's GET query. Pages start at 0."""
     page, rows = 0, []
@@ -378,21 +841,59 @@ def verify_api(
                 "count",
                 "tasks",
             )
+        if "config" in phases_completed and (migrated_task_ids or task_ids):
+            # Unscoped, to find what is in the Engine that this run never
+            # recorded. The search has no org filter, so an ORG_ADMIN key sees
+            # every org — the report says so rather than pretending otherwise.
+            #
+            # Also gated on task_ids, not just migrated_task_ids: it is the only
+            # way to tell a requested task the run never recorded *because it
+            # already existed* from one that genuinely never migrated.
+            futures["engine_all_tasks"] = executor.submit(
+                engine_paginate,
+                "/api/v2/tasks/search",
+                {},
+                "count",
+                "tasks",
+                page_size=SEARCH_PAGE_SIZE,
+            )
         if "config" in phases_completed and migrated_rule_ids:
             # The Engine rule search only returns active rules, so both sides
-            # compare active rules only.
+            # compare active rules only. Paginated rather than counted, so the
+            # reconciliation below can name the rules behind a mismatch.
             futures["shield_rules"] = executor.submit(
-                shield_post,
+                shield_paginate,
                 "/api/v2/rules/search",
                 {"rule_ids": migrated_rule_ids},
-                count_page,
+                "count",
+                "rules",
+            )
+            # Shield honours include_archived; the Engine does not. This is the
+            # only way to tell an archived recorded rule — which the Engine
+            # search can never return — from one that is genuinely missing.
+            futures["shield_archived_rules"] = executor.submit(
+                shield_paginate,
+                "/api/v2/rules/search",
+                {"rule_ids": migrated_rule_ids, "include_archived": True},
+                "count",
+                "rules",
             )
             futures["engine_rules"] = executor.submit(
-                engine_call,
-                "POST",
+                engine_paginate,
                 "/api/v2/rules/search",
                 {"rule_ids": migrated_rule_ids},
-                count_page,
+                "count",
+                "rules",
+                page_size=SEARCH_PAGE_SIZE,
+            )
+            # Unscoped, mirroring engine_all_tasks.
+            futures["engine_all_rules"] = executor.submit(
+                engine_paginate,
+                "/api/v2/rules/search",
+                {},
+                "count",
+                "rules",
+                page_size=SEARCH_PAGE_SIZE,
             )
         inference_chunks = []
         if "inferences" in phases_completed and migrated_task_ids:
@@ -500,12 +1001,25 @@ def verify_api(
             all_match = all_match and s == e
             lines.append(compare("task_rule_links", s, e))
         if migrated_rule_ids:
-            s = results["shield_rules"].get("count", 0)
-            e = results["engine_rules"].get("count", 0)
+            s = len(results["shield_rules"])
+            e = len(results["engine_rules"])
             all_match = all_match and s == e
             lines.append(compare("rules (active)", s, e))
         if not migrated_task_ids and not migrated_rule_ids:
             lines.append("  (save file records no migrated task or rule IDs)")
+        if migrated_task_ids or migrated_rule_ids or task_ids:
+            # The results keys only exist when the corresponding IDs were
+            # recorded. Running on task_ids alone covers the config phase
+            # completing having recorded nothing — every requested ID missing
+            # from Shield.
+            recon_lines, recon_ok = config_reconciliation(
+                task_ids,
+                migrated_task_ids,
+                migrated_rule_ids,
+                results,
+            )
+            all_match = all_match and recon_ok
+            lines.extend(recon_lines)
         lines.append("")
 
     # ── Inferences ────────────────────────────────────────────────────────
@@ -567,6 +1081,15 @@ def verify_api(
     lines.append("=" * 70)
     lines.append("  RESULT: " + ("ALL MATCH ✓" if all_match else "MISMATCHES FOUND ✗"))
     lines.append("=" * 70)
+    lines.extend(
+        caveat_lines(
+            True,
+            phases_completed,
+            task_ids=task_ids,
+            taskless_inference_ids=taskless_inference_ids,
+            migrated_rule_ids=migrated_rule_ids,
+        ),
+    )
 
     print("\n".join(lines))
     return all_match
@@ -910,6 +1433,14 @@ def verify(
     lines.append("=" * 70)
     lines.append("  RESULT: " + ("ALL MATCH ✓" if all_match else "MISMATCHES FOUND ✗"))
     lines.append("=" * 70)
+    lines.extend(
+        caveat_lines(
+            False,
+            phases_completed,
+            task_ids=task_ids,
+            taskless_inference_ids=taskless_inference_ids,
+        ),
+    )
 
     print("\n".join(lines))
     return all_match
