@@ -13,6 +13,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
@@ -29,6 +30,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/zlib1g" } ] },
@@ -45,6 +47,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] }
@@ -60,6 +63,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libncursesw6" }, { "@id": "pkg:deb/debian/libtinfo6" } ] },
@@ -76,6 +80,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libsqlite3-0" } ] },
@@ -92,6 +97,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] }
@@ -184,6 +190,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libexpat1" } ] },
@@ -200,6 +207,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libblkid1" }, { "@id": "pkg:deb/debian/libmount1" }, { "@id": "pkg:deb/debian/libsmartcols1" }, { "@id": "pkg:deb/debian/libuuid1" }, { "@id": "pkg:deb/debian/bsdutils" }, { "@id": "pkg:deb/debian/mount" }, { "@id": "pkg:deb/debian/util-linux" }, { "@id": "pkg:deb/debian/util-linux-extra" } ] },
@@ -249,6 +257,7 @@
       "products": [
         { "@id": "pkg:oci/genai-engine-cpu", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
         { "@id": "pkg:oci/genai-engine-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
+        { "@id": "pkg:oci/genai-engine-shield-migration-gpu", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
         { "@id": "pkg:oci/ml-engine", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
         { "@id": "pkg:oci/genai-engine-models-s3", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
         { "@id": "pkg:oci/genai-engine-models-fs", "subcomponents": [ { "@id": "pkg:deb/debian/libssl3" }, { "@id": "pkg:deb/debian/openssl" } ] },
