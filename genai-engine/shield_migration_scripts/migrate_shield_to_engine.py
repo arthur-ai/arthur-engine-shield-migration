@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
-from progress import Heartbeat, Progress, format_duration
+from progress import Progress, format_duration
 
 load_dotenv()
 
@@ -69,6 +69,13 @@ SHIELD_FETCH_WORKERS = int(os.getenv("MIGRATION_SHIELD_FETCH_WORKERS", default=3
 MAX_ATTEMPTS = 6
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
+# Pause the migration briefly every N Engine calls so a long run doesn't hold the
+# Engine at full write throughput for hours on end.
+ENGINE_THROTTLE_EVERY = int(os.getenv("MIGRATION_ENGINE_THROTTLE_EVERY", default=100))
+ENGINE_THROTTLE_SECONDS = float(
+    os.getenv("MIGRATION_ENGINE_THROTTLE_SECONDS", default=1.0),
+)
+
 ALL_PHASES = ["config", "inferences", "feedback"]
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -106,7 +113,7 @@ def shield_get(path, params=None):
     """GET request to Shield. Params dict may include lists for repeated keys."""
     r = request_with_retry(
         "GET",
-        f"{SHIELD_BASE_URL}/{path}",
+        f"{SHIELD_BASE_URL}{path}",
         headers={
             "Authorization": f"Bearer {SHIELD_API_KEY}",
         },
@@ -118,7 +125,7 @@ def shield_get(path, params=None):
 def shield_post(path, body, params=None):
     r = request_with_retry(
         "POST",
-        f"{SHIELD_BASE_URL}/{path}",
+        f"{SHIELD_BASE_URL}{path}",
         json=body,
         params=params or {},
         headers={
@@ -166,7 +173,33 @@ def shield_paginate(path, body, count_key, items_key, label=None):
 # ── Engine API helpers ────────────────────────────────────────────────────────
 
 
+ENGINE_CALL_LOCK = threading.Lock()
+ENGINE_CALL_COUNT = 0
+
+
+def engine_throttle():
+    """Sleep every ENGINE_THROTTLE_EVERY Engine calls.
+
+    The lock is held across the sleep so the whole worker pool pauses together
+    instead of each thread taking its own nap on its own count.
+    """
+    global ENGINE_CALL_COUNT
+    if ENGINE_THROTTLE_EVERY <= 0 or ENGINE_THROTTLE_SECONDS <= 0:
+        return
+    with ENGINE_CALL_LOCK:
+        ENGINE_CALL_COUNT += 1
+        if ENGINE_CALL_COUNT % ENGINE_THROTTLE_EVERY:
+            return
+        count = ENGINE_CALL_COUNT
+        time.sleep(ENGINE_THROTTLE_SECONDS)
+    print(
+        f"  Throttling: slept {ENGINE_THROTTLE_SECONDS:g}s after "
+        f"{count:,} Engine calls",
+    )
+
+
 def engine_call(method, path, body=None, params=None):
+    engine_throttle()
     r = request_with_retry(
         method,
         f"{ENGINE_BASE_URL}{path}",
@@ -207,37 +240,55 @@ def engine_paginate(path, body, count_key, items_key, label=None):
     return all_items
 
 
-def engine_post_batches(path, items_key, items):
+def engine_post_batches(path, items_key, items, label=None, org_id=True):
     """POST items to an Engine bulk endpoint in parallel ENGINE_BATCH_SIZE chunks.
 
-    Returns (inserted, skipped). On failure the page checkpoint is never
-    advanced, so a resume refetches the page and skip-existing dedupes any
-    chunks that already committed.
+    Returns (inserted, skipped, created_rows). The inference and feedback
+    endpoints report inserted/skipped counts; the config endpoints instead echo
+    the rows they created, so callers needing ids read those from created_rows.
+    `label` adds a progress line; `org_id=False` omits the field for endpoints
+    (rules, links) whose request schema has no such field.
+
+    Only safe for `items` holding no duplicate ids: the Engine computes
+    skip-existing per request, so two concurrent chunks carrying the same id
+    would both insert it and collide on the primary key. On failure the page
+    checkpoint is never advanced, so a resume refetches the page and
+    skip-existing dedupes any chunks that already committed.
     """
     chunks = [
         items[i : i + ENGINE_BATCH_SIZE]
         for i in range(0, len(items), ENGINE_BATCH_SIZE)
     ]
+    body_extra = {"org_id": ENGINE_ORG_ID} if org_id else {}
     inserted = skipped = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [
-            executor.submit(
-                engine_call,
-                "POST",
-                path,
-                {items_key: chunk, "org_id": ENGINE_ORG_ID},
-            )
-            for chunk in chunks
-        ]
-        for future in as_completed(futures):
-            try:
-                resp = future.result()
-            except Exception:
-                executor.shutdown(cancel_futures=True)
-                raise
-            inserted += resp.get("inserted", 0)
-            skipped += resp.get("skipped", 0)
-    return inserted, skipped
+    created: list = []
+    tracker = Progress(len(items), label, prefix="    ") if label else None
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(
+                    engine_call,
+                    "POST",
+                    path,
+                    {items_key: chunk, **body_extra},
+                ): len(chunk)
+                for chunk in chunks
+            }
+            for future in as_completed(futures):
+                try:
+                    resp = future.result()
+                except Exception:
+                    executor.shutdown(cancel_futures=True)
+                    raise
+                inserted += resp.get("inserted", 0)
+                skipped += resp.get("skipped", 0)
+                created.extend(resp.get(items_key, []))
+                if tracker is not None:
+                    tracker.update(futures[future])
+    finally:
+        if tracker is not None:
+            tracker.close()
+    return inserted, skipped, created
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -661,14 +712,21 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
         print()
         return
 
+    # all_rules is deduped as it is assembled above, so parallel chunks cannot
+    # race on the same rule id.
     step_start = time.monotonic()
-    with Heartbeat(f"inserting {len(all_rules):,} rules"):
-        resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": all_rules})
-    record_step_timing("config", "Insert rules", time.monotonic() - step_start)
-    ckpt.record_migrated_rules(
-        [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
+    _, _, created_rules = engine_post_batches(
+        "/api/v1/migration/rules/bulk",
+        "rules",
+        all_rules,
+        label="rules inserted",
+        org_id=False,
     )
-    inserted = len(resp.get("rules", []))
+    ckpt.record_migrated_rules(
+        [rule["id"] for rule in created_rules if rule.get("id")],
+    )
+    inserted = len(created_rules)
+    record_step_timing("config", "Insert rules", time.monotonic() - step_start)
     print(
         f"  Rules: "
         f"    {inserted} inserted"
@@ -679,18 +737,17 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
     # separately below so the Engine endpoint does NOT auto-link rules on insert.
     task_rows = [{k: v for k, v in t.items() if k != "rules"} for t in tasks]
     step_start = time.monotonic()
-    with Heartbeat(f"inserting {len(task_rows):,} tasks"):
-        resp = engine_call(
-            "POST",
-            "/api/v1/migration/tasks/bulk",
-            {"tasks": task_rows, "org_id": ENGINE_ORG_ID},
-        )
-    inserted_tasks = resp.get("tasks", [])
+    _, _, inserted_tasks = engine_post_batches(
+        "/api/v1/migration/tasks/bulk",
+        "tasks",
+        task_rows,
+        label="tasks inserted",
+    )
     ckpt.record_migrated_tasks(
         [t["id"] for t in inserted_tasks if t.get("id")],
     )
-    record_step_timing("config", "Insert tasks", time.monotonic() - step_start)
     inserted = len(inserted_tasks)
+    record_step_timing("config", "Insert tasks", time.monotonic() - step_start)
     print(
         f"  Tasks: "
         f"    {inserted} inserted"
@@ -709,19 +766,30 @@ def migrate_config(ckpt: Checkpoint, task_ids=None, recover=False):
                     "enabled": rule_link.get("enabled", True),
                 },
             )
+    # Sequential on purpose: the Engine computes skip-existing per request, so
+    # concurrent chunks sharing a (task_id, rule_id) pair would both insert it
+    # and collide on the composite primary key.
     step_start = time.monotonic()
-    with Heartbeat(f"inserting {len(links):,} task–rule links"):
-        resp = engine_call(
-            "POST",
-            "/api/v1/migration/task_rule_links/bulk",
-            {"task_to_rule_links": links},
-        )
+    inserted = 0
+    with Progress(len(links), "task–rule links inserted", prefix="    ") as tracker:
+        for start in range(0, len(links), ENGINE_BATCH_SIZE):
+            chunk = links[start : start + ENGINE_BATCH_SIZE]
+            resp = engine_call(
+                "POST",
+                "/api/v1/migration/task_rule_links/bulk",
+                {"task_to_rule_links": chunk},
+            )
+            inserted += len(resp.get("task_to_rule_links", []))
+            tracker.update(
+                len(chunk),
+                suffix=f"{inserted:,} inserted, "
+                f"{start + len(chunk) - inserted:,} skipped",
+            )
     record_step_timing(
         "config",
         "Insert task-rule links",
         time.monotonic() - step_start,
     )
-    inserted = len(resp.get("task_to_rule_links", []))
     print(
         f"  Task–rule links: "
         f"    {inserted} inserted"
@@ -790,16 +858,17 @@ def migrate_archived_rules(ckpt: Checkpoint, recover=False):
         return
 
     step_start = time.monotonic()
-    inserted = 0
-    with Progress(len(archived_rules), "archived rules", prefix="    ") as tracker:
-        for start in range(0, len(archived_rules), ENGINE_BATCH_SIZE):
-            chunk = archived_rules[start : start + ENGINE_BATCH_SIZE]
-            resp = engine_call("POST", "/api/v1/migration/rules/bulk", {"rules": chunk})
-            ckpt.record_migrated_rules(
-                [rule["id"] for rule in resp.get("rules", []) if rule.get("id")],
-            )
-            inserted += len(resp.get("rules", []))
-            tracker.update(len(chunk))
+    _, _, created_rules = engine_post_batches(
+        "/api/v1/migration/rules/bulk",
+        "rules",
+        archived_rules,
+        label="archived rules",
+        org_id=False,
+    )
+    ckpt.record_migrated_rules(
+        [rule["id"] for rule in created_rules if rule.get("id")],
+    )
+    inserted = len(created_rules)
 
     record_step_timing(
         "inferences",
@@ -1144,7 +1213,7 @@ def migrate_feedback(ckpt: Checkpoint, from_dt, to_dt, task_ids=None):
             if not batch:
                 break
 
-            page_inserted, page_skipped = engine_post_batches(
+            page_inserted, page_skipped, _ = engine_post_batches(
                 "/api/v1/migration/feedback/bulk",
                 "feedback",
                 batch,
