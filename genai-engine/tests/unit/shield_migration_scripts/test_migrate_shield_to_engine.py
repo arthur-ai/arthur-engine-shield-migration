@@ -162,13 +162,36 @@ def test_engine_post_batches_chunks_and_sums(monkeypatch):
 
     monkeypatch.setattr(mig, "engine_call", fake_call)
 
-    inserted, skipped = mig.engine_post_batches(
+    inserted, skipped, created = mig.engine_post_batches(
         "/api/v1/migration/feedback/bulk",
         "feedback",
         list(range(1001)),
     )
     assert sorted(seen) == [1, 500, 500]
     assert (inserted, skipped) == (1001, 0)
+    assert created == []
+
+
+@pytest.mark.unit_tests
+def test_engine_post_batches_returns_created_rows(monkeypatch):
+    """Config endpoints echo the rows they created instead of counts."""
+    monkeypatch.setattr(mig, "ENGINE_BATCH_SIZE", 2)
+    monkeypatch.setattr(mig, "MAX_WORKERS", 2)
+
+    def fake_call(method, path, body=None, params=None):
+        assert "org_id" not in body
+        return {"rules": body["rules"]}
+
+    monkeypatch.setattr(mig, "engine_call", fake_call)
+
+    inserted, skipped, created = mig.engine_post_batches(
+        "/api/v1/migration/rules/bulk",
+        "rules",
+        [{"id": "r1"}, {"id": "r2"}, {"id": "r3"}],
+        org_id=False,
+    )
+    assert (inserted, skipped) == (0, 0)
+    assert sorted(rule["id"] for rule in created) == ["r1", "r2", "r3"]
 
 
 # ── Archived rules ────────────────────────────────────────────────────────────
