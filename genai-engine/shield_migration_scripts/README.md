@@ -25,40 +25,43 @@ There is also **`delete_migrated_resources.py`** for rolling back a migration. I
 
 ## Contents
 
-- [Prerequisite: run the Engine in migration mode](#prerequisite-run-the-engine-in-migration-mode)
-- [Progress output](#progress-output)
-- [`pre_migration_scope.py`](#pre_migration_scopepy)
-  - [Setup](#setup)
-  - [Usage](#usage)
-  - [Options](#options)
-  - [Estimate mode (`--estimate`)](#estimate-mode---estimate)
-  - [Output](#output)
-- [`migrate_shield_to_engine.py`](#migrate_shield_to_enginepy)
-  - [Setup](#setup-1)
-  - [Usage](#usage-1)
-  - [Options](#options-1)
-  - [Per-task migration (`--task-ids`)](#per-task-migration---task-ids)
-  - [Timing report (`--timing`)](#timing-report---timing)
-- [`verify_counts.py`](#verify_countspy)
-  - [Config reconciliation (API mode)](#config-reconciliation-api-mode)
-  - [Caveats block](#caveats-block)
-  - [Setup](#setup-2)
-  - [Usage](#usage-2)
-  - [Options](#options-2)
-  - [Output](#output-1)
-- [`onboard_tasks_from_csv.py`](#onboard_tasks_from_csvpy)
-  - [A task is never linked twice](#a-task-is-never-linked-twice)
-  - [Resuming](#resuming)
-  - [Before a large CSV: raise the engine's API key limit](#before-a-large-csv-raise-the-engines-api-key-limit)
-  - [Setup](#setup-3)
-  - [Input CSV](#input-csv)
-  - [Usage](#usage-3)
-  - [Options](#options-3)
-  - [Output](#output-2)
-- [`delete_migrated_resources.py`](#delete_migrated_resourcespy)
-  - [Setup](#setup-4)
-  - [Usage](#usage-4)
-  - [Options](#options-4)
+- [Shield Migration Scripts](#shield-migration-scripts)
+  - [Contents](#contents)
+  - [Prerequisite: run the Engine in migration mode](#prerequisite-run-the-engine-in-migration-mode)
+  - [Hosts with a private CA (`REQUESTS_CA_BUNDLE`)](#hosts-with-a-private-ca-requests_ca_bundle)
+  - [Progress output](#progress-output)
+  - [`pre_migration_scope.py`](#pre_migration_scopepy)
+    - [Setup](#setup)
+    - [Usage](#usage)
+    - [Options](#options)
+    - [Estimate mode (`--estimate`)](#estimate-mode---estimate)
+    - [Output](#output)
+  - [`migrate_shield_to_engine.py`](#migrate_shield_to_enginepy)
+    - [Setup](#setup-1)
+    - [Usage](#usage-1)
+    - [Options](#options-1)
+    - [Per-task migration (`--task-ids`)](#per-task-migration---task-ids)
+    - [Timing report (`--timing`)](#timing-report---timing)
+  - [`verify_counts.py`](#verify_countspy)
+    - [Config reconciliation (API mode)](#config-reconciliation-api-mode)
+    - [Caveats block](#caveats-block)
+    - [Setup](#setup-2)
+    - [Usage](#usage-2)
+    - [Options](#options-2)
+    - [Output](#output-1)
+  - [`onboard_tasks_from_csv.py`](#onboard_tasks_from_csvpy)
+    - [A task is never linked twice](#a-task-is-never-linked-twice)
+    - [Resuming](#resuming)
+    - [Before a large CSV: raise the engine's API key limit](#before-a-large-csv-raise-the-engines-api-key-limit)
+    - [Setup](#setup-3)
+    - [Input CSV](#input-csv)
+    - [Usage](#usage-3)
+    - [Options](#options-3)
+    - [Output](#output-2)
+  - [`delete_migrated_resources.py`](#delete_migrated_resourcespy)
+    - [Setup](#setup-4)
+    - [Usage](#usage-4)
+    - [Options](#options-4)
 
 ## Prerequisite: run the Engine in migration mode
 
@@ -117,6 +120,40 @@ module, so a single `.py` lifted out on its own will not run.
 
 Any of the environment variables below can be set in the shell or placed in a
 `.env` file in this directory (loaded automatically).
+
+## Hosts with a private CA (`REQUESTS_CA_BUNDLE`)
+
+When Shield or the Engine is served with a certificate signed by an internal
+corporate CA, every HTTP call fails verification and the run dies on its first
+Engine write:
+
+```
+Exception: POST https://<engine-host>/api/v1/migration/rules/bulk failed after
+6 attempts: ... SSLError(SSLCertVerificationError(1, '[SSL:
+CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate
+in certificate chain'))
+```
+
+To resolve this issue, point `requests` at a CA bundle that verifies **both** Shield 
+and the Engine:
+
+```bash
+export REQUESTS_CA_BUNDLE=/path/to/ca-bundle.pem
+```
+
+The bundle replaces the trust store rather than adding to it, so it has to cover
+every host the run touches even when only one of them is private. A bundle holding
+just the internal CA will cause connections to a Shield host with an ordinary
+public certificate to fail verification.
+
+Then run the migration as normal:
+
+```bash
+python migrate_shield_to_engine.py --phase all --last-days 90
+```
+
+Through a load balancer, the certificate must also list the load balancer's
+hostname in its SANs.
 
 ## Progress output
 
