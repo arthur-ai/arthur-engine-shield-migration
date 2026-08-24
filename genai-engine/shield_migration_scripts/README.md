@@ -146,6 +146,32 @@ every host the run touches even when only one of them is private. A bundle holdi
 just the internal CA will cause connections to a Shield host with an ordinary
 public certificate to fail verification.
 
+If the CAs are not already consolidated into one file, build the bundle by
+concatenating them. PEM files stack directly, since each is a `-----BEGIN
+CERTIFICATE-----`/`-----END CERTIFICATE-----` block, and a bundle is just those
+blocks one after another. Include the public roots (`certifi`'s bundle, the one
+`requests` uses by default) alongside every internal CA:
+
+```bash
+cat internal-root-ca.pem internal-intermediate-ca.pem \
+    "$(python -c 'import certifi; print(certifi.where())')" > ca-bundle.pem
+```
+
+Include the full chain each host presents, an intermediate as well as the root
+if there is one. If a CA is in DER form (`.der`, `.crt`, `.cer`, binary rather
+than text), convert it first:
+
+```bash
+openssl x509 -inform DER -in internal-ca.der -outform PEM -out internal-ca.pem
+```
+
+Confirm the bundle holds everything you expect. This prints one line per
+certificate in it:
+
+```bash
+grep -c "BEGIN CERTIFICATE" ca-bundle.pem
+```
+
 Then run the migration as normal:
 
 ```bash
