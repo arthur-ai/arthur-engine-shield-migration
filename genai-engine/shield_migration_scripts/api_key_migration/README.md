@@ -135,7 +135,7 @@ whether or not the key is still active.
 | --- | --- |
 | **Counts** | Every recorded id is present in both Shield and the Engine. |
 | **Fidelity** | `key_hash`, `description`, `is_active`, `deactivated_at` and `roles` match per key. |
-| **Org scope** | Every migrated key carries the expected `org_id`. |
+| **Org scope** | Every migrated key carries the `org_id` the run recorded in the save file. |
 
 A `key_hash` mismatch is called out explicitly — that is the field that decides
 whether a migrated key still authenticates, so a difference there means the key

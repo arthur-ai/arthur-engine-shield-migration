@@ -8,7 +8,7 @@ Checks:
   - Fidelity     — key_hash, description, is_active, deactivated_at and roles
                    match per key. key_hash is what makes a migrated key keep
                    working, so a mismatch there means the key is dead.
-  - Org scope    — every migrated key carries the expected org_id
+  - Org scope    — every migrated key carries the org_id the run recorded
 
 The ids recorded by a migrate_api_keys.py run define the scope: every one of
 them is checked in both databases, whether or not the key is still active.
@@ -30,7 +30,6 @@ Engine DB connection (target): same variables with an ENGINE_ prefix
     ENGINE_POSTGRES_DB
     ENGINE_POSTGRES_USE_SSL         (optional, "true"/"false", default false)
     ENGINE_POSTGRES_SSL_ROOT_CERT   (optional, path to CA cert when SSL on)
-    ENGINE_ORG_ID                   (optional, org the keys were migrated into)
 
 Usage:
     python verify_api_keys.py --save-file ../../migration_states/api_key_migration_<stamp>.json
@@ -184,6 +183,7 @@ def check_fidelity(lines: list, shield_keys: dict, engine_keys: dict) -> bool:
             if source != target:
                 mismatches.append((key_id, column, source, target))
 
+    start = len(lines)
     if mismatches:
         lines.append(
             f"  {'✗ MISMATCH':<10} {'fields':<28} "
@@ -197,7 +197,7 @@ def check_fidelity(lines: list, shield_keys: dict, engine_keys: dict) -> bool:
             f"  {'✓':<10} {'fields':<28} "
             f"all {fmt(len(shared))} key(s) match on {', '.join(COMPARED_COLUMNS)}",
         )
-    print("\n".join(lines[-(len(mismatches) + 1) :]))
+    print("\n".join(lines[start:]))
     return not mismatches
 
 
@@ -219,13 +219,15 @@ def check_org_scope(lines: list, engine: Engine, key_ids: list, expected_org) ->
     matching = counts.get(expected, 0)
     total = sum(counts.values())
     status = "✓" if matching == total and total else "✗ MISMATCH"
+
+    start = len(lines)
     lines.append(f"  {status:<10} {'org_id':<28} {fmt(matching)}/{fmt(total)} = {expected}")
     for org, count in sorted(counts.items()):
         if org != expected:
             lines.append(f"{ROW}{fmt(count)} key(s) with org_id={org}")
     if expected == "NULL" and matching:
         lines.append(f"{BULLET}note: org_id NULL means cross-org admin keys")
-    print("\n".join(lines[-(len(counts)) :]))
+    print("\n".join(lines[start:]))
     return matching == total and bool(total)
 
 
@@ -238,21 +240,19 @@ def main():
         required=True,
         help="Path to the api_key_migration_*.json file written by migrate_api_keys.py",
     )
-    parser.add_argument(
-        "--org-id",
-        default=os.getenv("ENGINE_ORG_ID"),
-        help="Org the keys were migrated into. Defaults to ENGINE_ORG_ID.",
-    )
     args = parser.parse_args()
 
     if not os.path.exists(args.save_file):
         print(f"Save file not found: {args.save_file}", file=sys.stderr)
         sys.exit(1)
     with open(args.save_file) as f:
-        key_ids = json.load(f).get("migrated_api_key_ids", [])
+        state = json.load(f)
+    key_ids = state.get("migrated_api_key_ids", [])
     if not key_ids:
         print(f"No migrated_api_key_ids recorded in {args.save_file}.")
         return
+
+    expected_org = state.get("org_id")
 
     shield_engine = build_engine("SHIELD")
     engine_engine = build_engine("ENGINE")
@@ -264,7 +264,7 @@ def main():
     results = [
         check_presence(lines, key_ids, shield_keys, engine_keys),
         check_fidelity(lines, shield_keys, engine_keys),
-        check_org_scope(lines, engine_engine, key_ids, args.org_id),
+        check_org_scope(lines, engine_engine, key_ids, expected_org),
     ]
 
     print()
