@@ -40,8 +40,9 @@ Engine DB connection:
 Engine API (used only to read the Engine's live MAX_API_KEYS cap):
     ENGINE_BASE_URL
 
-The run is refused if it would push the Engine past that cap. The cap is read
-from the Engine itself, so it always reflects what the target instance enforces.
+Every key in scope is migrated. If that leaves the Engine over its cap, the run
+warns but still copies everything. The cap is read from the Engine itself, so it
+always reflects what the target instance enforces.
 
 Every --execute run records the ids it inserted to a save file, so the migrated
 keys can be told apart from keys created natively in the Engine and removed
@@ -423,7 +424,7 @@ def main():
     elif not args.org_id:
         print(
             "\nWarning: no --org-id or ENGINE_ORG_ID set. Migrated keys will have "
-            "org_id NULL, making them cross-org admin keys.",
+            "org_id NULL, making them cross-org api keys.",
         )
 
     max_keys = fetch_max_api_keys()
@@ -431,11 +432,10 @@ def main():
     active_after = active_before + incoming_active
     if incoming_active and active_after > max_keys:
         print(
-            "\nERROR: Migration would exceed max api key limit, please select a smaller "
-            "subset of api keys to migrate",
-            file=sys.stderr,
+            f"\nWarning: the Engine will hold {active_after} active keys. This is over its "
+            f"MAX_API_KEYS limit of {max_keys}. Please update the max api key limit "
+            f"if you would like to be able to create more api keys.",
         )
-        sys.exit(1)
 
     if not pending:
         print("\nNothing to migrate — every Shield key is already in the Engine.")

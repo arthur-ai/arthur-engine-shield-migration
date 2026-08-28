@@ -14,13 +14,17 @@ migrated — never on keys created natively in the Engine.
 
 ## Contents
 
-- [Why these read the database directly](#why-these-read-the-database-directly)
-- [Setup](#setup)
-- [`migrate_api_keys.py`](#migrate_api_keyspy)
-- [`verify_api_keys.py`](#verify_api_keyspy)
-- [`delete_migrated_api_keys.py`](#delete_migrated_api_keyspy)
-- [The MAX_API_KEYS cap](#the-max_api_keys-cap)
-- [Org scoping](#org-scoping)
+- [API Key Migration](#api-key-migration)
+  - [Contents](#contents)
+  - [Why these read the database directly](#why-these-read-the-database-directly)
+  - [Setup](#setup)
+  - [`migrate_api_keys.py`](#migrate_api_keyspy)
+    - [Options](#options)
+    - [Idempotency](#idempotency)
+  - [`verify_api_keys.py`](#verify_api_keyspy)
+  - [`delete_migrated_api_keys.py`](#delete_migrated_api_keyspy)
+  - [The MAX\_API\_KEYS cap](#the-max_api_keys-cap)
+  - [Org scoping](#org-scoping)
 
 ## Why these read the database directly
 
@@ -165,9 +169,12 @@ The Engine refuses to create a key once `MAX_API_KEYS` active keys exist
 (default 100). The check runs *before* each insert, so a cap of 50 means the
 Engine will hold at most 50 keys.
 
-A direct database insert would bypass that check entirely, so
-`migrate_api_keys.py` enforces the cap itself: if the run would push the Engine
-past it, nothing is migrated and the script exits non-zero.
+A direct database insert bypasses that check, so a migration can legitimately
+leave the Engine holding more than `MAX_API_KEYS` active keys. Every key in
+scope is migrated regardless.
+
+When that happens the run prints a warning. Raise `MAX_API_KEYS` on the Engine
+if you want to be able to create new keys afterward.
 
 The cap is read from the **target Engine's** OpenAPI spec via `ENGINE_BASE_URL`,
 not from a local environment variable. The Engine builds that endpoint
@@ -176,9 +183,6 @@ the number cannot drift from what the instance actually enforces.
 
 Only **active** keys count toward the cap, on both sides — deactivated keys
 migrate without consuming a slot.
-
-If a run is refused, narrow it with `--key-ids` or a date window, deactivate
-unused keys, or raise `MAX_API_KEYS` on the Engine.
 
 ## Org scoping
 
@@ -190,12 +194,12 @@ In the Engine, `api_keys.org_id` is meaningful:
 
 - **Non-null** — the key is a tenant key scoped to that org, and reaches only
   that org's tasks.
-- **NULL** — the key is a **cross-org admin key**, exempt from org-scope
+- **NULL** — the key is a **cross-org api key**, exempt from org-scope
   enforcement.
 
 `--org-id` (defaulting to `ENGINE_ORG_ID`) stamps migrated keys with an org so
 they line up with the tasks and inferences the main migration placed there. With
-neither set, keys land as `org_id NULL` — cross-org admin keys — and the script
+neither set, keys land as `org_id NULL` — cross-org api keys — and the script
 warns loudly.
 
 The Engine's own `POST /auth/api_keys/` cannot set `org_id` at all, so direct
