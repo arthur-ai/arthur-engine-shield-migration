@@ -182,15 +182,49 @@ def engine_has_org_id(conn: Connection) -> bool:
     )
 
 
-def parse_window(args):
-    """Resolve the created_at window, matching migrate_shield_to_engine.py."""
-    now = datetime.now(timezone.utc)
+def parse_date(value: str, flag: str):
+    """Parse a --from-date/--to-date value into a naive local datetime.
 
-    if args.last_days:
+    api_keys.created_at is `timestamp without time zone` holding local time
+    (Shield writes it with datetime.now()), so an aware value would compare
+    against it shifted by the UTC offset. Any offset given is converted to
+    local time and then dropped.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        print(
+            f"{flag}: {value!r} is not a valid ISO-8601 date "
+            f"(expected e.g. 2025-01-01 or 2025-01-01T13:30:00)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def parse_window(args):
+    """Resolve the created_at window as naive local datetimes."""
+    if args.last_days is not None:
+        if args.last_days < 1:
+            print(
+                f"--last-days: {args.last_days} must be a positive number of days",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        now = datetime.now()
         return now - timedelta(days=args.last_days), now
 
-    from_dt = datetime.fromisoformat(args.from_date) if args.from_date else None
-    to_dt = datetime.fromisoformat(args.to_date) if args.to_date else None
+    from_dt = parse_date(args.from_date, "--from-date") if args.from_date else None
+    to_dt = parse_date(args.to_date, "--to-date") if args.to_date else None
+
+    if from_dt and to_dt and from_dt >= to_dt:
+        print(
+            f"--from-date ({from_dt}) must be earlier than --to-date ({to_dt})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     return from_dt, to_dt
 
@@ -285,6 +319,23 @@ def insert_keys(conn: Connection, keys: list, org_id, with_org_id: bool) -> int:
 def default_save_path() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     return os.path.join(CHECKPOINT_DIR, f"api_key_migration_{stamp}.json")
+
+
+def check_save_path_writable(path: str) -> None:
+    """Prove the save file can be written before anything is inserted.
+
+    The save file is the only record of which keys a run migrated, so a path
+    that turns out to be unwritable after the commit would leave them in the
+    Engine with no way to roll them back.
+    """
+    parent = os.path.dirname(path) or "."
+    try:
+        os.makedirs(parent, exist_ok=True)
+        with open(path, "w"):
+            pass
+    except OSError as e:
+        print(f"Save file {path} is not writable: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def write_save_file(path: str, keys: list, org_id, with_org_id: bool) -> None:
@@ -448,6 +499,9 @@ def main():
         )
         return
 
+    save_file = args.save_file or default_save_path()
+    check_save_path_writable(save_file)
+
     print(f"\nMigrating {len(pending)} key(s)...")
     try:
         # One transaction: a failure partway leaves the Engine untouched rather
@@ -463,7 +517,6 @@ def main():
         sys.exit(1)
 
     # Written after the commit so the file only ever lists keys that landed.
-    save_file = args.save_file or default_save_path()
     write_save_file(save_file, pending, args.org_id, with_org_id)
 
     print(

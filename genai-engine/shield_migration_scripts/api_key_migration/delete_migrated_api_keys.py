@@ -142,7 +142,7 @@ def main():
     if args.deactivate:
         statement = text(
             "UPDATE api_keys SET is_active = false, deactivated_at = now() "
-            "WHERE id IN :ids",
+            "WHERE id IN :ids AND is_active",
         ).bindparams(bindparam("ids", expanding=True))
     else:
         statement = text("DELETE FROM api_keys WHERE id IN :ids").bindparams(
